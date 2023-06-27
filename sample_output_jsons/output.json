@@ -1,0 +1,175 @@
+{
+    "flowDefinitionArn": "arn:aws:sagemaker:us-west-2:638834599306:flow-definition/06222023-1-total-of-10-batches",
+    "humanAnswers": [
+        {
+            "acceptanceTime": "2023-06-22T20:01:47.608Z",
+            "answerContent": {},
+            "submissionTime": "2023-06-22T20:01:54.306Z",
+            "timeSpentInSeconds": 6.698,
+            "workerId": "3200a306cdffa740",
+            "workerMetadata": {
+                "identityData": {
+                    "identityProviderType": "Cognito",
+                    "issuer": "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_1j6F4wzAn",
+                    "sub": "6437589f-5076-421d-85cb-ab0fbab3f037"
+                }
+            }
+        }
+    ],
+    "humanLoopName": "285-C001914470",
+    "inputContent": {
+        "Results": {
+            "ConditionMissed": [
+                {
+                    "block": null,
+                    "condition_category": "Confidence",
+                    "condition_setting": 95,
+                    "condition_type": "ConfidenceThreshold",
+                    "field_name": "ADDRESSEE",
+                    "field_value": "LOU MCWHORTER",
+                    "index": 1,
+                    "message": "The field [ADDRESSEE] confidence score is 98.0."
+                },
+                {
+                    "block": null,
+                    "condition_category": "Confidence",
+                    "condition_setting": 95,
+                    "condition_type": "ConfidenceThreshold",
+                    "field_name": "ADDRESS_LINE_1",
+                    "field_value": "2241 BOX ANKLE RD",
+                    "index": 2,
+                    "message": "The field [ADDRESS_LINE_1] confidence score is 98.0."
+                },
+                {
+                    "block": null,
+                    "condition_category": "Confidence",
+                    "condition_setting": 95,
+                    "condition_type": "ConfidenceThreshold",
+                    "field_name": "ADDRESS_LINE_2",
+                    "field_value": "",
+                    "index": 3,
+                    "message": "The field [ADDRESS_LINE_2] confidence score is 98.0."
+                },
+                {
+                    "block": null,
+                    "condition_category": "Confidence",
+                    "condition_setting": 95,
+                    "condition_type": "ConfidenceThreshold",
+                    "field_name": "CITY",
+                    "field_value": "RICHMOND",
+                    "index": 4,
+                    "message": "The field [CITY] confidence score is 98.0."
+                },
+                {
+                    "block": null,
+                    "condition_category": "Confidence",
+                    "condition_setting": 95,
+                    "condition_type": "ConfidenceThreshold",
+                    "field_name": "STATE",
+                    "field_value": "KY",
+                    "index": 5,
+                    "message": "The field [STATE] confidence score is 98.0."
+                },
+                {
+                    "block": null,
+                    "condition_category": "Confidence",
+                    "condition_setting": 95,
+                    "condition_type": "ConfidenceThreshold",
+                    "field_name": "ZIP_CODE_4",
+                    "field_value": "40475-8724",
+                    "index": 6,
+                    "message": "The field [ZIP_CODE_4] confidence score is 98.0."
+                },
+                {
+                    "block": null,
+                    "condition_category": "Confidence",
+                    "condition_setting": 95,
+                    "condition_type": "ConfidenceThreshold",
+                    "field_name": "REGULATORY_APPROVAL_ID",
+                    "field_value": "Y0020_WCM_108136E_C INTERNAL APPROVED 08112022 NA3WCMLTR08136E_0000",
+                    "index": 7,
+                    "message": "The field [REGULATORY_APPROVAL_ID] confidence score 84.13631900326236 is LOWER than the threshold 95"
+                }
+            ],
+            "ConditionSatisfied": [
+                {
+                    "block": null,
+                    "condition_category": "Confidence",
+                    "condition_setting": 95,
+                    "condition_type": "ConfidenceThreshold",
+                    "field_name": "ADDRESSEE",
+                    "field_value": "LOU MCWHORTER",
+                    "index": 1,
+                    "message": "The field [ADDRESSEE] confidence score is 98.0."
+                },
+                {
+                    "block": null,
+                    "condition_category": "Confidence",
+                    "condition_setting": 95,
+                    "condition_type": "ConfidenceThreshold",
+                    "field_name": "ADDRESS_LINE_1",
+                    "field_value": "2241 BOX ANKLE RD",
+                    "index": 2,
+                    "message": "The field [ADDRESS_LINE_1] confidence score is 98.0."
+                },
+                {
+                    "block": null,
+                    "condition_category": "Confidence",
+                    "condition_setting": 95,
+                    "condition_type": "ConfidenceThreshold",
+                    "field_name": "ADDRESS_LINE_2",
+                    "field_value": "",
+                    "index": 3,
+                    "message": "The field [ADDRESS_LINE_2] confidence score is 98.0."
+                },
+                {
+                    "block": null,
+                    "condition_category": "Confidence",
+                    "condition_setting": 95,
+                    "condition_type": "ConfidenceThreshold",
+                    "field_name": "CITY",
+                    "field_value": "RICHMOND",
+                    "index": 4,
+                    "message": "The field [CITY] confidence score is 98.0."
+                },
+                {
+                    "block": null,
+                    "condition_category": "Confidence",
+                    "condition_setting": 95,
+                    "condition_type": "ConfidenceThreshold",
+                    "field_name": "STATE",
+                    "field_value": "KY",
+                    "index": 5,
+                    "message": "The field [STATE] confidence score is 98.0."
+                },
+                {
+                    "block": null,
+                    "condition_category": "Confidence",
+                    "condition_setting": 95,
+                    "condition_type": "ConfidenceThreshold",
+                    "field_name": "ZIP_CODE_4",
+                    "field_value": "40475-8724",
+                    "index": 6,
+                    "message": "The field [ZIP_CODE_4] confidence score is 98.0."
+                },
+                {
+                    "block": null,
+                    "condition_category": "Confidence",
+                    "condition_setting": 95,
+                    "condition_type": "ConfidenceThreshold",
+                    "field_name": "REGULATORY_APPROVAL_ID",
+                    "field_value": "Y0020_WCM_108136E_C INTERNAL APPROVED 08112022 NA3WCMLTR08136E_0000",
+                    "message": "The field [REGULATORY_APPROVAL_ID] confidence score is 84.13631900326236."
+                }
+            ]
+        },
+        "s3": {
+            "bucket": "sagemaker-us-west-2-638834599306",
+            "image_height": 3341,
+            "image_width": 2623,
+            "path": "06222023/CUR6470-01_3934_06212023_0001153914/C001914470-image-for-A2I.png",
+            "url": "s3://sagemaker-us-west-2-638834599306/06222023/CUR6470-01_3934_06212023_0001153914/C001914470-image-for-A2I.png"
+        },
+        "text": "Page 1"
+    }
+}
