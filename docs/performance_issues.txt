@@ -1,0 +1,1 @@
+compile regex just once

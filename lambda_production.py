@@ -131,15 +131,75 @@ rules = [
     }
     ]
 #----------------Image processing -----------------------------------------
-def extract_bounding_image(filepath,bounding_box):
+
+def process_tiff_file(file_path):
+    #info = subprocess.check_output(['identify', '-format', '%b', file_path])
+    #print(type(info))
+    #info = info.split('B')[0]
+    #print(info)
+    #print(int(info)/(1024*1024))
+    # Check file size
+    #info = subprocess.check_output(['identify', '-verbose', file_path])
+    #print(info)
+    
+    #print(file_size)
+    #file_size = int(substring)
+
+    # Check if file is in color
+    #color_check = subprocess.check_output(['convert', file_path, '-ping', '-format', '%[colorspace]', 'info:'])
+    #is_color = color_check.strip().decode('utf-8') != 'Gray'
+    #print(color_check)
+
+    try:
+        subprocess.run(['convert', file_path,'-colorspace', 'GRAY', '-depth', '1','-compress', 'group4', file_path], check=True)
+
+        #subprocess.run(['convert', file_path,'-morphology', 'Close', 'Disk:1.0', '-compress', 'group4', file_path], check=True)
+        #86.01
+        #subprocess.run(['convert', file_path,'-morphology', 'Close', 'Disk:1.5', '-compress', 'group4', file_path], check=True)
+        #86.98
+        #subprocess.run(['convert', file_path,'-morphology', 'Close', 'Ring:1,1.5', '-compress', 'group4', file_path], check=True)
+        #82.6
+        #subprocess.run(['convert', file_path,'-morphology', 'Close', 'Cross:1', '-compress', 'group4', file_path], check=True)
+        #89.48
+        # Check new file size
+        #color_check = subprocess.check_output(['convert', file_path, '-ping', '-format', '%[colorspace]', 'info:'])
+        #info = subprocess.check_output(['identify', '-verbose', file_path])
+        #new_file_size = subprocess.check_output(['convert', file_path, '-ping', '-format', '%B', 'info:'])
+        #print(type(new_file_size))
+        #n = len(new_file_size)
+        #k = n/2
+        #new_file_size = list(new_file_size)[:k]
+        #print(new_file_size)
+        #new_file_size = int(new_file_size)/(1024 * 1024)
+    
+        #if new_file_size > 10:
+        #    print("Unable to compress the file under 10 MB.")
+        #    #print(f'Old file size is: {file_size}')
+        #    print(f'new file size is: {new_file_size}')
+        #else:
+        print("File processed successfully.")
+    except subprocess.CalledProcessError as e:
+        print(f"Image processing failed: {e}")
+
+
+
+
+def extract_bounding_image(filepath,savepath,geometry):
     '''Given Textract bounding box, use Image Magick to
     extract as tif image the area in the bounding box plus a
-    5% margin. Save to tmp'''
-    save_path = f'/tmp/{filepath[:-4]}-bounding-box.tif'
-    command = ['convert', filepath, '-crop', '110%x110%+',x_offset,'+',y_offset, save_path]
+    small margin. Save to tmp'''
+    
+    width = geometry['BoundingBox']['Width']
+    height = geometry['BoundingBox']['Height']
+    x_offset = geometry['BoundingBox']['Left']
+    y_offset = geometry['BoundingBox']['Top']
+    
+    #command = ['convert', filepath, '-crop', '110%x110%+',x_offset,'+',y_offset, save_path]
+    command = ['convert', filepath, '-crop', 'widthxheight','+offset_x','+offset_y', save_path]
+
     try:
         subprocess.run(command, check=True)
-        print("Image splitting completed successfully.")
+        print("Image bounding box extracted successfully.")
     except subprocess.CalledProcessError as e:
         print(f"Image extraction failed: {e}")
         
@@ -149,7 +209,7 @@ def split_tif(filepath):
     print(filepath)
     
     command = ['convert', filepath, filepath[:-4]+ '-%02d.tif']
-    command2 = ['convert', filepath, '-crop', '100%x100%', '+repage', '-write', filepath[:-4]+'-%02d.tif', 'null:']
+    #command2 = ['convert', filepath, '-crop', '100%x100%', '+repage', '-write', filepath[:-4]+'-%02d.tif', 'null:']
 
     try:
         subprocess.run(command, check=True)
@@ -255,22 +315,24 @@ def get_reg_id(response_json):
     Outputs a tuple: string consisting of regulatory approval id and confidence score.
     '''
     #Default values
-    twenty_code, twenty_max_conf = '',0
-    approval_code, approval_max_conf = '',0
+    twenty_code, twenty_max_conf, twenty_geo = '',0, None
+    approval_code, approval_max_conf, approval_geo = '',0, None
     
     approval_re = re.compile(r'[(A-Z0-9_]+[_ ].*?(?:MATERIALS?|MODIFIED|MODIFIED_2023|ACCEPTED|SPN|)\d{7,8}')
     #approval_re = re.compile(r'[A-Z][A-Z0-9]+[_ ].*\d\d\d\d\d\d\d\d')
     #twenty_re_old = re.compile(r'[A-Z][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]+[ _.A-Z]\d{3,4}')
-    twenty_re = re.compile(r'[A-Z][A-Z][O0-9][A-Z][A-Z][A-Z][A-Z0-9][A-Z0-9][A-Z0-9]+[ _.][A-Z\d]{3,4}$') 
+    twenty_re = re.compile(r'[A-Z]{1,2}.[O0-9][/A-Z][A-Z][A-Z][A-Z0-9][A-Z0-9][A-Z0-9]+[ _.][A-Z0-9]{3,4}$') 
 
     if 'Blocks' in response_json:
         #Get all lines
-        lines = [(item['Text'], item['Confidence']) for item in response_json['Blocks'] if item['BlockType'] == 'LINE']
+        lines = [(item['Text'], item['Confidence'], item['Geometry']) for item in response_json['Blocks'] if item['BlockType'] == 'LINE']
         #Examine last lines
         for ln in lines:
+            print(ln)
             #Get line text and confidence
             ln_text = ln[0].upper()
             ln_conf = ln[1]
+            ln_geo = ln[2]
             #print(ln_text)
             #print(ln_text)
             #print(ln_conf)
@@ -284,7 +346,7 @@ def get_reg_id(response_json):
             if ln_approval and approval_code == '':
                 extracted_app = ln_approval[0]    
                 #The processor removes all non alphanumeric characters, trims whitespace, converting all characters to lower case, then does the comparison
-                match_info = extractOne(extracted_app, reg_id_approved, scorer=ratio, score_cutoff=80, processor=default_process)
+                match_info = extractOne(extracted_app, reg_id_approved, scorer=ratio, score_cutoff=70, processor=default_process)
                 #Check if close match to result in table
                 #search through table for best match, cutoff improves speed...if no
                 #score for entry in table lookup lower than cutoff then further processing
@@ -295,21 +357,24 @@ def get_reg_id(response_json):
                     ln_match = match_info[0]
                     ln_match_conf = match_info[1]
                     #If line confidence exceeds threshold, and format close to table format, then get raw Textract extraction
-                    if (ln_conf > confidence_threshold) and ln_match_conf > confidence_threshold:
+                    if (ln_conf > 97) and (ln_match_conf > 60):
                         approval_code = extracted_app
                         approval_max_conf = ln_conf
+                        approval_geo = ln_geo
                         print('Raw output used for app. code')
                         print(approval_code)
                         print(approval_max_conf)
                         print(ln_text)
                         print(ln_conf)
 
-                    else: # ln_match_conf > confidence_threshold: #If  confidence lower, use table 
+                    else: #If  confidence lower, use table 
                         approval_code = ln_match
                         #we don't want confidence to be 100 just because a perfect match was found in the table: it could be we misread a character
-                        #and matched the wrong one due to bad Textract read. So, we multiply line confidence by match confidence (match_info[1]).
+                        #and matched the wrong one due to bad Textract read. So, we take min.
                         #In this way confidence we return is at most equal to cutoff when table is used.
-                        approval_max_conf = match_info[1]*(ln_conf/100)
+                        approval_max_conf = min(match_info[1],ln_conf)
+                        approval_geo = ln_geo
+
                         print('Table used for app. code')
                         print(approval_code)
                         print(approval_max_conf)
@@ -324,24 +389,27 @@ def get_reg_id(response_json):
                 #Get first match
                 
                 extracted_20 = ln_twenty[0]
+                print(extracted_20)
                 #if ln_twenty2:
                 #    extracted_20 = ln_twenty2[0]
-                match_info = extractOne(extracted_20, twenty_digit_codes, scorer=ratio, score_cutoff=80,processor=default_process)    
+                match_info = extractOne(extracted_20, twenty_digit_codes, scorer=ratio, score_cutoff=70,processor=default_process)    
                 if match_info:
                     ln_match = match_info[0]
                     ln_match_conf = match_info[1]
                     #If line confidence exceeds threshold, and format close to table format, then get raw Textract extraction
-                    if (ln_conf > confidence_threshold) and ln_match_conf > confidence_threshold:
+                    if (ln_conf > 97) and (ln_math_conf > 60):
                         twenty_code = extracted_20
                         twenty_max_conf = ln_conf
+                        twenty_geo = ln_geo
                         print('Raw output used for inv. code')
                         print(twenty_code)
                         print(twenty_max_conf)
                         print(ln_text)
                         print(ln_conf)
-                    else:# ln_match_conf > confidence_threshold: #If  confidence lower, use table 
+                    else:#  #If  confidence lower, use table 
                         twenty_code = ln_match
-                        twenty_max_conf = match_info[1]*(ln_conf/100)
+                        twenty_max_conf = min(match_info[1],ln_conf)
+                        twenty_geo = ln_geo
                         print('Table used for inv. code')
                         print(twenty_code)
                         print(twenty_max_conf)
@@ -358,7 +426,115 @@ def get_reg_id(response_json):
         
     reg_id_match = ' '.join((approval_code,twenty_code))
 
-    return reg_id_match, confidence_reg_id
+    return reg_id_match, confidence_reg_id, approval_geo, twenty_geo
+    
+def get_reg_code(response_json):
+    #
+    approval_code, approval_max_conf, approval_geo = '',0, None
+    
+    approval_re = re.compile(r'[(A-Z0-9_]+[_ ].*?(?:MATERIALS?|MODIFIED|MODIFIED_2023|ACCEPTED|SPN|)\d{7,8}')
+    
+    if 'Blocks' in response_json:
+        #Get all lines
+        lines = [(item['Text'], item['Confidence'], item['Geometry']) for item in response_json['Blocks'] if item['BlockType'] == 'LINE']
+        #Examine last lines
+        for ln in lines:
+            print(ln)
+            #Get line text and confidence
+            ln_text = ln[0].upper()
+            ln_conf = ln[1]
+            ln_geo = ln[2]
+            #print(ln_text)
+            #print(ln_text)
+            #print(ln_conf)
+            #Check if approval code in line
+            ln_approval = approval_re.findall(ln_text)
+            
+            #How to choose cutoff? We have done limited experimentation. This is a guess that seemed to perform well in the handful of tests we did
+            if ln_approval and approval_code == '':
+                extracted_app = ln_approval[0]    
+                #The processor removes all non alphanumeric characters, trims whitespace, converting all characters to lower case, then does the comparison
+                match_info = extractOne(extracted_app, reg_id_approved, scorer=ratio, score_cutoff=70, processor=default_process)
+                #Check if close match to result in table
+                #search through table for best match, cutoff improves speed...if no
+                #score for entry in table lookup lower than cutoff then further processing
+                #on that entry stopped. If all items in table below cutoff then highest
+                #score among them returned
+                #If match above cutoff found then format close to table format
+                if match_info:
+                    ln_match = match_info[0]
+                    ln_match_conf = match_info[1]
+                    #If line confidence exceeds threshold, and format close to table format, then get raw Textract extraction
+                    if (ln_conf > 97) and (ln_match_conf > 60):
+                        approval_code = extracted_app
+                        approval_max_conf = ln_conf
+                        approval_geo = ln_geo
+                        print('Raw output used for app. code')
+                        print(approval_code)
+                        print(approval_max_conf)
+                        print(ln_text)
+                        print(ln_conf)
+
+                    else: #If  confidence lower, use table 
+                        approval_code = ln_match
+                        #we don't want confidence to be 100 just because a perfect match was found in the table: it could be we misread a character
+                        #and matched the wrong one due to bad Textract read. So, we take min.
+                        #In this way confidence we return is at most equal to cutoff when table is used.
+                        approval_max_conf = min(match_info[1],ln_conf)
+                        approval_geo = ln_geo
+
+                        print('Table used for app. code')
+                        print(approval_code)
+                        print(approval_max_conf)
+                        print(match_info[1])
+                        print(ln_text)
+                        print(ln_conf)
+
+
+            #It is possible for both approval code and 20 digit code to be on same line, that 
+            #is why we don't use if else. Check if regex matches and that we have not found one yet.
+            if ln_twenty and twenty_code == '':
+                #Get first match
+                
+                extracted_20 = ln_twenty[0]
+                print(extracted_20)
+                #if ln_twenty2:
+                #    extracted_20 = ln_twenty2[0]
+                match_info = extractOne(extracted_20, twenty_digit_codes, scorer=ratio, score_cutoff=70,processor=default_process)    
+                if match_info:
+                    ln_match = match_info[0]
+                    ln_match_conf = match_info[1]
+                    #If line confidence exceeds threshold, and format close to table format, then get raw Textract extraction
+                    if (ln_conf > 97) and (ln_math_conf > 60):
+                        twenty_code = extracted_20
+                        twenty_max_conf = ln_conf
+                        twenty_geo = ln_geo
+                        print('Raw output used for inv. code')
+                        print(twenty_code)
+                        print(twenty_max_conf)
+                        print(ln_text)
+                        print(ln_conf)
+                    else:#  #If  confidence lower, use table 
+                        twenty_code = ln_match
+                        twenty_max_conf = min(match_info[1],ln_conf)
+                        twenty_geo = ln_geo
+                        print('Table used for inv. code')
+                        print(twenty_code)
+                        print(twenty_max_conf)
+                        print(match_info[1])
+                        print(ln_text)
+                        print(ln_conf)
+
+    #Take min of the two conf. levels as the confidence overall that way
+    #code only above cutoff if both parts are above cutoff
+    if (twenty_max_conf > 0) and (approval_max_conf > 0):
+        confidence_reg_id = min(twenty_max_conf, approval_max_conf)
+    else: #take the average so that if both are zero then it is 0, we use 0 to determine whenn no codes found (e.g. CILT)
+        confidence_reg_id = (twenty_max_conf + approval_max_conf)/2
+        
+    reg_id_match = ' '.join((approval_code,twenty_code))
+
+    return reg_id_match, confidence_reg_id, approval_geo, twenty_geo
 
 def detect_text(bucket, key):
     response = textract.detect_document_text(
@@ -653,8 +829,8 @@ centene_format ={
 }
 # --------------- Main handler ------------------
 def lambda_handler(event, context):
-    '''Demonstrates S3 trigger that uses
-    textract APIs to detect text, query text in S3 Object.
+    '''S3 triggers lambda function, lambda uses
+    textract APIs to detect text, query text in TIF image file.
     '''
     print('Received event: ' + json.dumps(event, indent=2))
 
@@ -675,10 +851,15 @@ def lambda_handler(event, context):
         print(f"File downloaded successfully from S3.")
     except Exception as e:
         print(f"Error downloading file from S3: {e}")
-
-    split_into_pages_top_and_bottom(local_file_name)
+    
+    #compress and convert to black and white if color
+    process_tiff_file(local_file_name)
     
     #Split into pages
+    #Call textract on each page
+    #query name, get regid
+    #
+    split_into_pages_top_and_bottom(local_file_name)
     #split_tif(local_file_name)
     
     #directory = '/tmp'  # Replace with your directory path
@@ -709,9 +890,11 @@ def lambda_handler(event, context):
     files = os.listdir('/tmp')
     for file in files:
         #print('Here is one file:')
-        #print(file)
         if '.tif' in file:
+            print(file)
+
             print('Save to output bucket this:')
+            #strip the prefix off and append filename
             s3_filename = f'{key.rstrip(parts[-1])}{file}'
             
             #s3_filename = f'{parts[-4]}/{parts[-3]}/{parts[-2]}/{file}'
@@ -733,146 +916,181 @@ def lambda_handler(event, context):
             client.upload_file('/tmp/' + file, output_bucket, s3_filename)
             if 'bottom' in file:
                 bottom_list.append(s3_filename)
-            if 'top' in file:
+            elif 'top' in file:
                 top_list.append(s3_filename)
+            else:
+                page_list.append(s3_filename)
+                
     #iterate over pages bottom  
     bottom_response = []
     #set regid file to be cilt if None, if found update to be that
     reg_id_file = None
-    bottom_list = sorted(bottom_list, key=lambda x: x[-13:])
-    print(f'Bottom list is: {bottom_list}')
-    
-    for file in bottom_list:
-    # Call the analyze_document API
-    
-        print(file)
-        
-        try:
-            # Call the analyze_document API
-            print(f'calling Textract on {file}')
-            bottom_response = textract.detect_document_text(
-                Document={'S3Object': {'Bucket': output_bucket, 'Name':file}})
-                    
-        except Exception as e:
-            print(e)
-                
-        if bottom_response:
-            print(f'Textract called on {file} sucessfully.')
-            #Use document knowledge that RegID at bottom and certain format to grab it 
-            reg_id, reg_id_conf = get_reg_id(bottom_response)
-            if reg_id_conf > 0:
-                print(f'RegID code found in {file}.')
-                print(reg_id, reg_id_conf)
-                #save location
-                reg_id_file = file
-                
-                centene_format['REGULATORY_APPROVAL_ID'] = reg_id
-                break
-    
-    #In case no name or no regid found, make sure regid blank         
-    if not reg_id_file:
-        centene_format['REGULATORY_APPROVAL_ID'] = ''
-    
+    #bottom_list = sorted(bottom_list, key=lambda x: x[-13:])
+    #print(f'Bottom list is: {bottom_list}')
+    page_list = sorted(page_list, key=lambda x: x[-6:])
+
     query_response = [] 
     #Define to be cilt if none
     name_file = None
     name_conf = 0
-    top_list = sorted(top_list, key=lambda x: x[-13:])
-    print(f'Top list is: {top_list}')
-    
-    for file in top_list:
-        print(f'Top file is : {file}')
-        try:
-            # Calls textract detect_document_text API to detect text in the document S3 object
-            #text_response = detect_text(bucket, key)
-            print(f'Calling Textract on {file}')
-            # Calls textract analyze_document API to query S3 object
-            query_response = textract.analyze_document(Document={'S3Object': {'Bucket': output_bucket, 'Name': file}},
-            FeatureTypes=['QUERIES'],
-            QueriesConfig={'Queries': queries}
-            )
-        except Exception as e:
-            print(e)
-            print('Error processing object {} from bucket {}. '.format(key, bucket) +
-              'Make sure your object and bucket exist and your bucket is in the same region as this function.')
-            #Save error to file
-            #status = save_dict_to_s3(centene_format, output_bucket,output_file_name)
-            #print(status)
-            raise e
-        if query_response:
-            
-            # Store json of parsed response of first page
-            query_data = parse_response_to_json(query_response)
-        
+
+    #CHANGE for file in page_list
+    for file in page_list:
+        if not centene_format['ADDRESSEE']:
+            #If name not found yet
+            try:
+                print(f'Calling analyze_document on {file}')
+                # Calls textract analyze_document API to query S3 object
+                query_response = textract.analyze_document(Document={'S3Object': {'Bucket': output_bucket, 'Name': file}},
+                FeatureTypes=['QUERIES'],
+                QueriesConfig={'Queries': queries}
+                )
+                
+            except Exception as e:
+                print(e)
+                print('Error calling analyze_document on {} from bucket {}. '.format(key, bucket) +
+                  'Make sure your object and bucket exist and your bucket is in the same region as this function.')
             #Check if query name available
-            if query_data['ADDRESSEE']:
-                print(f'Name found on {file}')
-                name_file = file
-                name = query_data['ADDRESSEE']['value']
-                name_conf = query_data['ADDRESSEE']['confidence']
+            if query_response:
+                #get regid code
+                reg_id, reg_id_conf, approval_geo, twenty_geo = get_reg_id(query_response)
+                if reg_id_conf > 0:
+                    print(f'RegID code found in {file}.')
+                    print(reg_id, reg_id_conf)
+                    #save location
+                    reg_id_file = file[:-4] + '-bottom.tif'
+                    #Now use bounding boxes to call again
+                    if approval_geo == twenty_geo:
+                        geo = approval_geo
+                        #save to b-box
+                        page_file_parts = file.split('/')
+                        tmp_page_file = '/tmp/'+ page_file_parts[-1]
+                        savepath = f'/tmp/{page_file_parts}-bounding-box.tif'
+                        print(f'Extracting to {savepath}')
+                        extract_bounding_image(tmp_page_file,savepath,geo)
+                        #save to s3
+                        #We upload that to the correct bucket and prefix
+                        s3_filename = file[:-4] + '-bounding-box.tif'
+                        print(f's3_filename is {s3_filename}')
+                        client.upload_file(savepath, output_bucket, s3_filename)
+                        #call textract image
+                        print(f'calling detect_document on {file}')
+                        doc_response = textract.detect_document_text(
+                        Document={'S3Object': {'Bucket': output_bucket, 'Name':s3_filename}})
+                        #Call get_reg_id on response
+                        #get regid code
+                        reg_id, reg_id_conf, approval_geo, twenty_geo = get_reg_id(doc_response)
+                        if reg_id_conf > 0:
+                            print(f'RegID code found in {s3_filename}.')
+                            print(reg_id, reg_id_conf)
+                            #save location
+                            centene_format['REGULATORY_APPROVAL_ID'] = reg_id
+
                 
-                #Function get_next_line searches for name in lines, if not found, returns null
-                #If ad1 returns null, then query name wrong or does not exist in document lines
-                ad1 = get_next_line(name,query_response)
-                
-                if ad1: #If ad1 not null, query name is correct, so use it to get fields
-                    ad2 = get_next_line(ad1, query_response)
-                    ad3 = get_next_line(ad2, query_response)
+                    else:
+                        pass
+                        #they are distinct lines
+                        #extract image 1
+                        #extract image 2
+                        #save to s3
+                        #Call textract on image 1 and 2
+                        #call get_reg_id on responses, confidence will be wrong
+                        #this will return a left code and right code resp, join them and return
                     
+                    centene_format['REGULATORY_APPROVAL_ID'] = reg_id
                 
-                    if not ad3: #If no 3rd address line 
-                        centene_format['ADDRESSEE'] = name
-                        centene_format['ADDRESS_LINE_1'] = ad1
-                        centene_format['ADDRESS_LINE_2'] = ''
-                        centene_format['CITY'] = get_city(ad2)
-                        centene_format['STATE'] = get_state(ad2)
-                        centene_format['ZIP_CODE_4'] = get_zip(ad2)
-                    else: #If there is a 3rd address line
-                        centene_format['ADDRESSEE'] = name
-                        centene_format['ADDRESS_LINE_1'] = ad1
-                        centene_format['ADDRESS_LINE_2'] = ad2
-                        centene_format['CITY'] = get_city(ad3)
-                        centene_format['STATE'] = get_state(ad3)
-                        centene_format['ZIP_CODE_4'] = get_zip(ad3)
-                        #Barcode document fix
-                        #the code of 1's and i's below address gets read
-                        #when this happens, state is None as it tries
-                        #to pull two capital letters from a numeric code
-                        #since there is no 3rd address line
-                        if not centene_format['STATE']:
-                            #then use no 3rd address line code
+                # Store json of parsed response of page
+                query_data = parse_response_to_json(query_response)
+                if query_data['ADDRESSEE']:
+                    print(f'Name found on {file}')
+                    name_file = file[:-4] + '-top.tif'
+                    name = query_data['ADDRESSEE']['value']
+                    name_conf = query_data['ADDRESSEE']['confidence']
+                    
+                    #Function get_next_line searches for name in lines, if not found, returns null
+                    #If ad1 returns null, then query name wrong or does not exist in document lines
+                    ad1 = get_next_line(name,query_response)
+                    
+                    if ad1: #If ad1 not null, query name is correct, so use it to get fields
+                        ad2 = get_next_line(ad1, query_response)
+                        ad3 = get_next_line(ad2, query_response)
+                        
+                    
+                        if not ad3: #If no 3rd address line 
                             centene_format['ADDRESSEE'] = name
                             centene_format['ADDRESS_LINE_1'] = ad1
                             centene_format['ADDRESS_LINE_2'] = ''
                             centene_format['CITY'] = get_city(ad2)
                             centene_format['STATE'] = get_state(ad2)
                             centene_format['ZIP_CODE_4'] = get_zip(ad2)
+                        else: #If there is a 3rd address line
+                            centene_format['ADDRESSEE'] = name
+                            centene_format['ADDRESS_LINE_1'] = ad1
+                            centene_format['ADDRESS_LINE_2'] = ad2
+                            centene_format['CITY'] = get_city(ad3)
+                            centene_format['STATE'] = get_state(ad3)
+                            centene_format['ZIP_CODE_4'] = get_zip(ad3)
+                            #Barcode document fix
+                            #the code of 1's and i's below address gets read
+                            #when this happens, state is None as it tries
+                            #to pull two capital letters from a numeric code
+                            #since there is no 3rd address line
+                            if not centene_format['STATE']:
+                                #then use no 3rd address line code
+                                centene_format['ADDRESSEE'] = name
+                                centene_format['ADDRESS_LINE_1'] = ad1
+                                centene_format['ADDRESS_LINE_2'] = ''
+                                centene_format['CITY'] = get_city(ad2)
+                                centene_format['STATE'] = get_state(ad2)
+                                centene_format['ZIP_CODE_4'] = get_zip(ad2)
+                                
+                                
                             
-                            
+                    else: #Query name is wrong or doesn't exist, pass to query defaults
+                        street_address = ''
+                        city = ''
+                        state = ''
+                        zip_code = ''
                         
-                else: #Query name is wrong or doesn't exist, pass to query defaults
-                    street_address = ''
-                    city = ''
-                    state = ''
-                    zip_code = ''
+                        #If queries found fields use them
+                        if query_data['STREET_ADDRESS']:
+                            street_address = query_data['STREET_ADDRESS']['value']
+                        if query_data['CITY']:
+                            city = query_data['CITY']['value']
+                        if query_data['STATE']:
+                            state = query_data['STATE']['value']
+                        if query_data['ZIP_CODE_4']:
+                            zip_code = query_data['ZIP_CODE_4']['value']
+                            
+                        #Now input the values we have    
+                        centene_format['ADDRESSEE'] = name    
+                        centene_format['ADDRESS_LINE_1'] = street_address
+                        centene_format['ADDRESS_LINE_2'] = ''
+                        centene_format['CITY'] = city
+                        centene_format['STATE'] = state
+                        centene_format['ZIP_CODE_4'] = zip_code
                     
-                    #If queries found fields use them
-                    if query_data['STREET_ADDRESS']:
-                        street_address = query_data['STREET_ADDRESS']['value']
-                    if query_data['CITY']:
-                        city = query_data['CITY']['value']
-                    if query_data['STATE']:
-                        state = query_data['STATE']['value']
-                    if query_data['ZIP_CODE_4']:
-                        zip_code = query_data['ZIP_CODE_4']['value']
-                        
-                    #Now input the values we have    
-                    centene_format['ADDRESSEE'] = name    
-                    centene_format['ADDRESS_LINE_1'] = street_address
-                    centene_format['ADDRESS_LINE_2'] = ''
-                    centene_format['CITY'] = city
-                    centene_format['STATE'] = state
-                    centene_format['ZIP_CODE_4'] = zip_code
+                
+        else not centene_format['REGULATORY_APPROVAL_ID']:
+            #if query_data["ADDRESSEE"] then name found, so call detect document instead
+            #unless reg app id found already
+            try:
+                # Call the detect_document API
+                print(f'calling detect_document on {file}')
+                doc_response = textract.detect_document_text(
+                    Document={'S3Object': {'Bucket': output_bucket, 'Name':file}})
+                    
+            except Exception as e:
+                print(e)
+            #get regid code
+            reg_id, reg_id_conf, approval_geo, twenty_geo = get_reg_id(doc_response)
+            if reg_id_conf > 0:
+                print(f'RegID code found in {file}.')
+                print(reg_id, reg_id_conf)
+                #save location
+                reg_id_file = file[:-4] + '-bottom.tif'
+            
+                centene_format['REGULATORY_APPROVAL_ID'] = reg_id
                     
                 break #break out of loop
     
@@ -950,6 +1168,8 @@ def lambda_handler(event, context):
     
     #Combine the partial pages where the fields were found
     if name_file and reg_id_file:
+        print(f'reg id file is {reg_id_file}')
+        print(f'Name file is {name_file}')
         name_file_parts = name_file.split('/')
         reg_id_file_parts = reg_id_file.split('/')
         tmp_name_file = '/tmp/'+ name_file_parts[-1]
@@ -1004,4 +1224,4 @@ def lambda_handler(event, context):
         print(f"Removed file: {filename}")
 
     
-    return status, centene_format, rule_missed, rule_checked
+    return status, centene_format

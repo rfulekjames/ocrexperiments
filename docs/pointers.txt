@@ -1,0 +1,12 @@
+get_reg_id  get left-right-id
+
+analyse document API  code to change
+
+
+TEST -> notebook job 
+
+
+ml.t3.medium 
+
+
+
