@@ -13,6 +13,8 @@ import subprocess
 import os
 from PIL import Image as PIL_IMAGE
 import pytesseract
+from itertools import product
+from collections import deque
 
 
 print("Loading function")
@@ -401,7 +403,6 @@ def get_reg_id(response_json, file):
                 extracted_20 = ln_twenty[0]
                 # if ln_twenty2:
                 #    extracted_20 = ln_twenty2[0]
-
 
                 tesseract_match = get_codes_from_tesseract(ln, file, twenty_re)
                 match_info = extractOne(
@@ -1133,5 +1134,222 @@ event = {
     ]
 }
 
+
+def align_candidates(s1, s2, s3, dummychar="-"):
+    def get_alignment(x, y, alignment):
+        return "".join(dummychar if i is None else x[i] for i, _ in alignment), "".join(
+            dummychar if j is None else y[j] for _, j in alignment
+        )
+
+    aligned_12_s1, aligned_12_s2 = get_alignment(s1, s2, needleman_wunsch(s1, s2))
+    aligned_13_s1, aligned_13_s3 = get_alignment(s1, s3, needleman_wunsch(s1, s3))
+    aligned_23_s2, aligned_23_s3 = get_alignment(s2, s3, needleman_wunsch(s2, s3))
+    # print(aligned_s1, aligned_s2, aligned_s3)
+    print(aligned_12_s1)
+    print(aligned_12_s2)
+    print(aligned_13_s1)
+    print(aligned_13_s3)
+    print(aligned_23_s2)
+    print(aligned_23_s3)
+    if len(aligned_12_s1) == len(aligned_13_s1):
+        return aligned_12_s1, aligned_12_s2, aligned_13_s3
+    elif len(aligned_13_s1) == len(aligned_23_s2):
+        return aligned_13_s1, aligned_23_s2, aligned_13_s3
+    else:
+        return aligned_12_s1, aligned_12_s2, aligned_23_s3
+
+
+def recover_from_aligned_candidates(
+    textract_line_confidence,
+    aligned_s1,
+    aligned_s2,
+    aligned_s3,
+    dummychar="-",
+):
+    def get_char_if_not_dummy(ch):
+        return ch if ch != dummychar else ""
+
+    recovered_string = ""
+    for c1, c2, c3 in zip(aligned_s1, aligned_s2, aligned_s3):
+        if c1 == c2:
+            recovered_string += get_char_if_not_dummy(c1)
+        elif c1 == c3:
+            recovered_string += get_char_if_not_dummy(c1)
+        elif c2 == c3:
+            recovered_string += get_char_if_not_dummy(c2)
+        else:
+            # No agreement, first go with Textract (c1) as we know our accuracy level with Textract
+            if c1 != dummychar:
+                recovered_string += c1
+            elif c2 != dummychar:
+                recovered_string += c2
+            else:
+                recovered_string += c3
+
+    new_line_confidence = 0
+    match_proportion = 1
+    for c1, c2, c3 in zip(aligned_s1, aligned_s2, aligned_s3):
+        # If all different, then use textract line confidence
+        if c1 != c2 and c2 != c3 and c1 != c3:
+            # cut confidence boost in half
+            match_proportion *= 1 / 2
+
+        # if all agree, then for that character maintain match proportion
+        elif (c1 == c2) and (c2 == c3) and (c1 == c3):
+            # maintain full confidence boost
+            match_proportion *= 1
+
+        else:  # two of three agree, reduce match proportion to 2/3 previously level
+            # cut confidence boost by 10%
+            match_proportion *= (9) / 10
+    confidence_boost = (100 - textract_line_confidence) * (match_proportion)
+    new_line_confidence = textract_line_confidence + confidence_boost
+
+    return recovered_string, new_line_confidence
+
+
+def needleman_wunsch(x, y):
+    """Run the Needleman-Wunsch algorithm on two sequences.
+
+    x, y -- sequences.
+
+    Code based on pseudocode in Section 3 of:
+
+    Naveed, Tahir; Siddiqui, Imitaz Saeed; Ahmed, Shaftab.
+    "Parallel Needleman-Wunsch Algorithm for Grid." n.d.
+    https://upload.wikimedia.org/wikipedia/en/c/c4/ParallelNeedlemanAlgorithm.pdf
+    """
+    N, M = len(x), len(y)
+    s = lambda a, b: int(a == b)
+
+    DIAG = -1, -1
+    LEFT = -1, 0
+    UP = 0, -1
+
+    # Create tables F and Ptr
+    F = {}
+    Ptr = {}
+
+    F[-1, -1] = 0
+    for i in range(N):
+        F[i, -1] = -i
+    for j in range(M):
+        F[-1, j] = -j
+
+    option_Ptr = DIAG, LEFT, UP
+    for i, j in product(range(N), range(M)):
+        option_F = (
+            F[i - 1, j - 1] + s(x[i], y[j]),
+            F[i - 1, j] - 1,
+            F[i, j - 1] - 1,
+        )
+        F[i, j], Ptr[i, j] = max(zip(option_F, option_Ptr))
+
+    # Work backwards from (N - 1, M - 1) to (0, 0)
+    # to find the best alignment.
+    alignment = deque()
+    i, j = N - 1, M - 1
+    while i >= 0 and j >= 0:
+        direction = Ptr[i, j]
+        if direction == DIAG:
+            element = i, j
+        elif direction == LEFT:
+            element = i, None
+        elif direction == UP:
+            element = None, j
+        alignment.appendleft(element)
+        di, dj = direction
+        i, j = i + di, j + dj
+    while i >= 0:
+        alignment.appendleft((i, None))
+        i -= 1
+    while j >= 0:
+        alignment.appendleft((None, j))
+        j -= 1
+
+    return list(alignment)
+
+
 if __name__ == "__main__":
-    lambda_handler(event, None)
+    # lambda_handler(event, None)
+    print(
+        recover_from_aligned_candidates(
+            70,
+            *align_candidates(
+                "NA2WCME.OB79520E_.2022",
+                "NA2WCMEOB79520E_2022",
+                "NA.2WCMEOB79520E_2022",
+            ),
+        )
+    )
+
+def create_matrix(dimensions):
+    rows, cols, depth = dimensions
+    return [[[0] * depth for _ in range(cols)] for _ in range(rows)]
+
+def get_alignment(seq1, seq2, seq3, gap_penalty, match_score, mismatch_score):
+    # Initialize the scoring matrix
+    rows = len(seq1) + 1
+    cols = len(seq2) + 1
+    depth = len(seq3) + 1
+    scores = create_matrix((rows, cols, depth))
+    pointers = create_matrix((rows, cols, depth))
+    alignments = []
+
+    # Fill the first row, column, and depth with gap penalties
+    for i in range(rows):
+        scores[i][0][0] = i * gap_penalty
+        pointers[i][0][0] = (i - 1, 0, 0)
+    for j in range(cols):
+        scores[0][j][0] = j * gap_penalty
+        pointers[0][j][0] = (0, j - 1, 0)
+    for k in range(depth):
+        scores[0][0][k] = k * gap_penalty
+        pointers[0][0][k] = (0, 0, k - 1)
+
+    # Calculate the scores and pointers for each cell
+    for i in range(1, rows):
+        for j in range(1, cols):
+            for k in range(1, depth):
+                match = scores[i - 1][j - 1][k - 1] + (match_score if seq1[i - 1] == seq2[j - 1] == seq3[k - 1] else mismatch_score)
+                delete = scores[i - 1][j][k] + gap_penalty
+                insert = scores[i][j - 1][k] + gap_penalty
+                insert2 = scores[i][j][k - 1] + gap_penalty
+                scores[i][j][k] = max(match, delete, insert, insert2)
+                if scores[i][j][k] == match:
+                    pointers[i][j][k] = (i - 1, j - 1, k - 1)
+                elif scores[i][j][k] == delete:
+                    pointers[i][j][k] = (i - 1, j, k)
+                elif scores[i][j][k] == insert:
+                    pointers[i][j][k] = (i, j - 1, k)
+                else:
+                    pointers[i][j][k] = (i, j, k - 1)
+
+    # Traceback to construct the alignments
+    i, j, k = rows - 1, cols - 1, depth - 1
+    while i > 0 or j > 0 or k > 0:
+        di, dj, dk = pointers[i][j][k]
+        if di == i - 1 and dj == j - 1 and dk == k - 1:
+            alignments.append((seq1[i - 1], seq2[j - 1], seq3[k - 1]))
+        elif di == i - 1 and dj == j and dk == k:
+            alignments.append((seq1[i - 1], "-", "-"))
+        elif di == i and dj == j - 1 and dk == k:
+            alignments.append(("-", seq2[j - 1], "-"))
+        else:
+            alignments.append(("-", "-", seq3[k - 1]))
+        i, j, k = di, dj, dk
+
+    return alignments[::-1]
+
+# Example usage
+sequence1 = "NA2WCME.OB79520E_.2022"
+sequence2 = "NA2WCMEOB79520E_2022"
+sequence3 = "NA.2WCMEOB79520E_2022"
+
+gap_penalty = -1
+match_score = 1
+mismatch_score = -1
+
+alignment = get_alignment(sequence1, sequence2, sequence3, gap_penalty, match_score, mismatch_score)
+for aligned_chars in alignment:
+    print(aligned_chars)
