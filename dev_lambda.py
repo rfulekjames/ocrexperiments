@@ -1,3 +1,4 @@
+
 import boto3
 from decimal import Decimal
 import json
@@ -11,7 +12,7 @@ from rapidfuzz.fuzz import ratio, WRatio
 from rapidfuzz.utils import default_process
 import subprocess
 import os
-from PIL import Image as PIL_IMAGE
+from PIL import Image as pillow_image
 import pytesseract
 from itertools import product
 from collections import deque
@@ -20,6 +21,7 @@ from collections import deque
 print("Loading function")
 
 test_bucket_name = "centene-test"
+output_bucket_name = "centene-test-out"
 
 session = boto3.Session(profile_name="default")
 textract = boto3.client("textract")
@@ -33,8 +35,18 @@ region = boto3.session.Session().region_name
 # Must be different from trigger bucket
 # Lambda IAM role only has write permission to this bucket
 tables_bucket = test_bucket_name
-output_bucket = test_bucket_name
+output_bucket = output_bucket_name
 data_bucket = test_bucket_name
+
+
+approval_re = re.compile(
+    r"[(A-Z0-9_]+[_ ].*?(?:MATERIALS?|MODIFIED|MODIFIED_2023|ACCEPTED|SPN|)\d{7,8}"
+)
+# approval_re = re.compile(r'[A-Z][A-Z0-9]+[_ ].*\d\d\d\d\d\d\d\d')
+# twenty_re_old = re.compile(r'[A-Z][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]+[ _.A-Z]\d{3,4}')
+twenty_re = re.compile(
+    r"[A-Z][A-Z][O0-9][A-Z][A-Z][A-Z][A-Z0-9][A-Z0-9][A-Z0-9]+[ _.][A-Z\d]{3,4}$"
+)
 
 
 # os.environ["BUCKET"] = data_bucket
@@ -273,40 +285,127 @@ def recombine(top_path, bottom_path):
 # copy
 
 
-def get_codes_from_tesseract(ln, file, reg_exp):
-    file_in_folder = f"tmp/{file}"
-    file_in_folder_morphed = f"{file_in_folder[:-4]}-morphed{file_in_folder[-4:]}"
-    file_in_folder_cropped = f"{file_in_folder[:-4]}-cropped{file_in_folder[-4:]}"
+def multistage_extraction(get_text_function_list, reg_expressions):
+    """
+    multistage_extraction extracts text in multiple stages defined by arguments
+    :param get_text_function_list:  list of functions to extract text
+    :param reg_expressions: list of regular expressions to get a match
+    :return: List: None if no match found for the corresponding regular expression and the matched code otherwise.
+    """
+    matches = len(reg_expressions) * [None]
+    for get_text_function in get_text_function_list:
+        texts = get_text_function().split("\n")
+        for text in texts:
+            matches_found = [reg_exp.findall(text) for reg_exp in reg_expressions]
+            matches = [
+                match[0] if not matches[i] and match else matches[i]
+                for i, match in enumerate(matches_found)
+            ]
+            if all(matches):
+                break
+        if all(matches):
+            break
+    print('Tesseract matches:')
+    print('\n'.join([match if match else '' for match in matches]))
+    return matches
 
-    image = PIL_IMAGE.open(file_in_folder)
+
+def get_codes_from_tesseract(ln, file, reg_expressions):
+    """
+    get_codes_from_tesseract extracts text based on reg_exp match
+    it considers the bounding box specificed by ln in the image in the file.
+    Does a little preprocessing that thickens the letters.
+    :param ln:  line returned from Textract
+    :param file: filename of the bottom part image
+    :param reg_expressions: compiled regular expressions to match codes
+    :return: List: None if no match found for the corresponding regular expression and the matched code otherwise.
+    """
+    file_in_folder = f"tmp/{file}"
+    file_in_folder_morphed = f"{file_in_folder[:-4]}-morphed-{file_in_folder[-4:]}"
+    file_in_folder_cropped = f"{file_in_folder[:-4]}-cropped-{file_in_folder[-4:]}"
+    file_in_folder_cropped_morphed = (
+        f"{file_in_folder[:-4]}-cropped-morphed-{file_in_folder[-4:]}"
+    )
+
+    image = pillow_image.open(file_in_folder)
     width, height = image.size
     box = ln[2]["BoundingBox"]
     left = width * box["Left"]
     top = height * box["Top"]
-    boxWidth = width * box["Width"]
-    boxHeight = height * box["Height"]
-    image = image.crop((left, top, left + boxWidth, top + boxHeight))
+    box_width = width * box["Width"]
+    box_height = height * box["Height"]
+    # Need to make the bounding box larger a bit since Textract returns it too small
+    bounding_box = (left - 20, top - 20, left + box_width + 20, top + box_height + 20)
+    image = image.crop(bounding_box)
     image.save(file_in_folder_cropped)
-    try:
-        subprocess.run(
-            [
-                "convert",
-                file_in_folder_cropped,
-                "-morphology",
-                "Erode",
-                "Disk:1.0",
-                "-compress",
-                "group4",
-                file_in_folder_morphed,
-            ],
-            check=True,
-        )
-    except subprocess.CalledProcessError as e:
-        print(f"Code extraction failed: {e}")
+    # print(f'Bounding Box from {file_in_folder}:')
+    # print(bounding_box)
+    cfg = '-c tessedit_char_whitelist="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_ "'
 
-    text = pytesseract.image_to_string(PIL_IMAGE.open(file_in_folder_morphed))
-    match = reg_exp.findall(text)
-    return match[0] if match else None
+    def stage1_extraction():
+        try:
+            subprocess.run(
+                [
+                    "convert",
+                    file_in_folder_cropped,
+                    "-morphology",
+                    "Erode",
+                    "Disk:1.0",
+                    "-compress",
+                    "group4",
+                    file_in_folder_cropped_morphed,
+                ],
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            print(f"Code extraction failed: {e}")
+        return pytesseract.image_to_string(
+            pillow_image.open(file_in_folder_cropped_morphed),
+            config=cfg,
+        )
+
+    def stage2_extraction():
+        try:
+            subprocess.run(
+                [
+                    "convert",
+                    file_in_folder,
+                    "-morphology",
+                    "Erode",
+                    "Disk:1.0",
+                    "-compress",
+                    "group4",
+                    file_in_folder_morphed,
+                ],
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            print(f"Code extraction failed: {e}")
+        return pytesseract.image_to_string(
+            pillow_image.open(file_in_folder_morphed),
+            config=cfg,
+        )
+
+    def stage3_extraction():
+        return pytesseract.image_to_string(
+            pillow_image.open(file_in_folder_cropped),
+            config=cfg,
+        )
+
+    def stage4_extraction():
+        return pytesseract.image_to_string(
+            pillow_image.open(file_in_folder),
+            config=cfg,
+        )
+    
+    get_text_function_list = [
+        stage1_extraction,
+        stage2_extraction,
+        # stage3_extraction,
+        # stage4_extraction,
+    ]
+
+    return multistage_extraction(get_text_function_list, reg_expressions)
 
 
 def get_reg_id(response_json, file):
@@ -317,14 +416,6 @@ def get_reg_id(response_json, file):
     twenty_code, twenty_max_conf = "", 0
     approval_code, approval_max_conf = "", 0
 
-    approval_re = re.compile(
-        r"[(A-Z0-9_]+[_ ].*?(?:MATERIALS?|MODIFIED|MODIFIED_2023|ACCEPTED|SPN|)\d{7,8}"
-    )
-    # approval_re = re.compile(r'[A-Z][A-Z0-9]+[_ ].*\d\d\d\d\d\d\d\d')
-    # twenty_re_old = re.compile(r'[A-Z][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]+[ _.A-Z]\d{3,4}')
-    twenty_re = re.compile(
-        r"[A-Z][A-Z][O0-9][A-Z][A-Z][A-Z][A-Z0-9][A-Z0-9][A-Z0-9]+[ _.][A-Z\d]{3,4}$"
-    )
 
     if "Blocks" in response_json:
         # Get all lines
@@ -345,14 +436,27 @@ def get_reg_id(response_json, file):
             ln_approval = approval_re.findall(ln_text)
             # Check if 20 code in line
             ln_twenty = twenty_re.findall(ln_text)
+            ln_approval_alternative, ln_twenty_alternative = map(
+                lambda code: code.upper() if code else None,
+                get_codes_from_tesseract(ln, file, (approval_re, twenty_re)),
+            )
             # ln_twenty2 = twenty_re2.findall(ln_text)
             # If approval code found and we have not found one yet
             # How to choose cutoff? We have done limited experimentation. This is a guess that seemed to perform well in the handful of tests we did
-            if ln_approval and approval_code == "":
-                extracted_app = ln_approval[0]
+            if (ln_approval or ln_approval_alternative) and approval_code == "":
+                extracted_app = (
+                    ln_approval[0] if ln_approval else ln_approval_alternative
+                )
+                if ln_approval_alternative:
+                    print(f'Tesseract app code is {ln_approval_alternative}')
+                else:
+                    print('No Tesseract extraction of app code')
+                if ln_approval:
+                    print(f'Raw textract is {ln_approval[0]}')
+                else:
+                    print('No Textract extraction of app code')
+                
                 # The processor removes all non alphanumeric characters, trims whitespace, converting all characters to lower case, then does the comparison
-                tesseract_match = get_codes_from_tesseract(ln, file, approval_re)
-                print(json.dumps(ln[2]))
                 match_info = extractOne(
                     extracted_app,
                     reg_id_approved,
@@ -360,7 +464,7 @@ def get_reg_id(response_json, file):
                     score_cutoff=80,
                     processor=default_process,
                 )
-
+                print(f'Table app code is {match_info[0]}')
                 # Check if close match to result in table
                 # search through table for best match, cutoff improves speed...if no
                 # score for entry in table lookup lower than cutoff then further processing
@@ -368,43 +472,45 @@ def get_reg_id(response_json, file):
                 # score among them returned
                 # If match above cutoff found then format close to table format
                 if match_info:
-                    ln_match = match_info[0]
-                    ln_match_conf = match_info[1]
-                    # If line confidence exceeds threshold, and format close to table format, then get raw Textract extraction
-                    if (
-                        ln_conf > confidence_threshold
-                    ) and ln_match_conf > confidence_threshold:
-                        approval_code = extracted_app
+                    ################### Tesseract Extraction and Alignment with Recovery ##########################################
+                    #print(f"extracted_app (Textract possibly Tesseract): {extracted_app},\n ln_approval_alternative (Tesseract): {ln_approval_alternative},\n match_info[0]: {match_info[0]}")
+                    
+                    #If both are found, then there are three codes, so get alignment and use recovered code
+                    if ln_approval_alternative and ln_approval:
+                        (
+                            approval_code,
+                            approval_max_conf,
+                        ) = recover_from_aligned_candidates(
+                            ln_conf,
+                            *get_three_alignment(
+                                extracted_app,
+                                ln_approval_alternative,
+                                match_info[0],
+                            ),
+                        )
+                        print("Recovered output from three sources textract/tesseract/table lookup")
+                        print(f'Tesseract code is {ln_approval_alternative}')
+                        print(f'Textract code is {ln_approval[0]}')
+                        print(f'Table code is {match_info[0]}')
+                        print(f'Line confidence is {ln_conf}')
+                        print(f"Recovered Code: {approval_code} with confidence {approval_max_conf}")
+                    else: #Either textract missed, or tesseract, but not both (as we have table match), so use table
+                        approval_code = match_info[0]
+                        #previous product with table score was too low in testing, going with line confidence as this is typically already low when
+                        #one of both codes not found
                         approval_max_conf = ln_conf
-                        print("Raw output used for app. code")
-                        print(approval_code)
-                        print(approval_max_conf)
-                        print(ln_text)
-                        print(ln_conf)
-
-                    else:  # ln_match_conf > confidence_threshold: #If  confidence lower, use table
-                        approval_code = ln_match
-                        # we don't want confidence to be 100 just because a perfect match was found in the table: it could be we misread a character
-                        # and matched the wrong one due to bad Textract read. So, we multiply line confidence by match confidence (match_info[1]).
-                        # In this way confidence we return is at most equal to cutoff when table is used.
-                        approval_max_conf = match_info[1] * (ln_conf / 100)
-                        print("Table used for app. code")
-                        print(approval_code)
-                        print(approval_max_conf)
-                        print(match_info[1])
-                        print(ln_text)
-                        print(ln_conf)
+                        print(f'Table used for app. code: {approval_code}')
+                        print(f'Line confidence is {approval_max_conf}')
+                        print(f'Table match score is {match_info[1]}')
+                        
 
             # It is possible for both approval code and 20 digit code to be on same line, that
             # is why we don't use if else. Check if regex matches and that we have not found one yet.
-            if ln_twenty and twenty_code == "":
+            if (ln_twenty or ln_twenty_alternative) and twenty_code == "":
                 # Get first match
-
-                extracted_20 = ln_twenty[0]
+                extracted_20 = ln_twenty[0] if ln_twenty else ln_twenty_alternative
                 # if ln_twenty2:
                 #    extracted_20 = ln_twenty2[0]
-
-                tesseract_match = get_codes_from_tesseract(ln, file, twenty_re)
                 match_info = extractOne(
                     extracted_20,
                     twenty_digit_codes,
@@ -413,40 +519,46 @@ def get_reg_id(response_json, file):
                     processor=default_process,
                 )
                 if match_info:
-                    ln_match = match_info[0]
-                    ln_match_conf = match_info[1]
-                    # If line confidence exceeds threshold, and format close to table format, then get raw Textract extraction
-                    if (
-                        ln_conf > confidence_threshold
-                    ) and ln_match_conf > confidence_threshold:
-                        twenty_code = extracted_20
+                    ################### Tesseract Extraction and Alignment with Recovery ##########################################
+                    #print(f"extracted_app (Textract possibly Tesseract): {extracted_20},\n ln_approval_alternative (Tesseract): {ln_twenty_alternative},\n match_info[0]: {match_info[0]}")
+                    #If both Tesseract and Textract extraction available, use Table as third code and recover code from the three
+                    if ln_twenty_alternative and ln_twenty:
+                        (
+                            twenty_code,
+                            twenty_max_conf,
+                        ) = recover_from_aligned_candidates(
+                            ln_conf,
+                            *get_three_alignment(
+                                ln_twenty_alternative,
+                                extracted_20,
+                                match_info[0],
+                            ),
+                        )
+                        print("Recovered output from three sources textract/tesseract/table lookup")
+                        print(f'Tesseract code is {ln_twenty_alternative}')
+                        print(f'Textract code is {ln_twenty[0]}')
+                        print(f'Table code is {match_info[0]}')
+                        print(f'Line confidence is {ln_conf}')
+                        print(f"Recovered Code: {twenty_code} with confidence {twenty_max_conf}")
+                    else: 
+                        #Either textract missed, or tesseract, but not both (as we have table match), so use table
+                        twenty_code = match_info[0]
                         twenty_max_conf = ln_conf
-                        print("Raw output used for inv. code")
-                        print(twenty_code)
-                        print(twenty_max_conf)
-                        print(ln_text)
-                        print(ln_conf)
-                    else:  # ln_match_conf > confidence_threshold: #If  confidence lower, use table
-                        twenty_code = ln_match
-                        twenty_max_conf = match_info[1] * (ln_conf / 100)
-                        print("Table used for inv. code")
-                        print(twenty_code)
-                        print(twenty_max_conf)
-                        print(match_info[1])
-                        print(ln_text)
-                        print(ln_conf)
-
+                        print(f'Table used for twenty code: {twenty_code}')
+                        print(f'Line confidence is {twenty_max_conf}')
+                        print(f'Table match score is {match_info[1]}')
+                        
+                        
     # Take min of the two conf. levels as the confidence overall that way
     # code only above cutoff if both parts are above cutoff
     if (twenty_max_conf > 0) and (approval_max_conf > 0):
         confidence_reg_id = min(twenty_max_conf, approval_max_conf)
-    else:  # take the average so that if both are zero then it is 0, we use 0 to determine whenn no codes found (e.g. CILT)
+    else:  # take the average so that if both are zero then it is 0, we use 0 to determine when no codes found (e.g. CILT)
         confidence_reg_id = (twenty_max_conf + approval_max_conf) / 2
 
     reg_id_match = " ".join((approval_code, twenty_code))
 
     return reg_id_match, confidence_reg_id
-
 
 def detect_text(bucket, key):
     response = textract.detect_document_text(
@@ -868,6 +980,7 @@ def lambda_handler(event, context):
             print(f"Textract called on {file} sucessfully.")
             # Use document knowledge that RegID at bottom and certain format to grab it
             reg_id, reg_id_conf = get_reg_id(bottom_response, file.split("/")[-1])
+            return
             if reg_id_conf > 0:
                 print(f"RegID code found in {file}.")
                 print(reg_id, reg_id_conf)
@@ -1124,7 +1237,7 @@ event = {
                     "arn": "arn:aws:s3:::lambda-artifacts-deafc19498e3f2df",
                 },
                 "object": {
-                    "key": "real-doc/C001157780.TIF",
+                    "key": "real-doc/C001942515.tiff",
                     "size": 1305107,
                     "eTag": "b21b84d653bb07b05b1e6b33684dc11b",
                     "sequencer": "0C0F6F405D6ED209E1",
@@ -1135,28 +1248,14 @@ event = {
 }
 
 
-def align_candidates(s1, s2, s3, dummychar="-"):
+def get_two_alignment(s1, s2, dummychar="-"):
     def get_alignment(x, y, alignment):
         return "".join(dummychar if i is None else x[i] for i, _ in alignment), "".join(
             dummychar if j is None else y[j] for _, j in alignment
         )
 
-    aligned_12_s1, aligned_12_s2 = get_alignment(s1, s2, needleman_wunsch(s1, s2))
-    aligned_13_s1, aligned_13_s3 = get_alignment(s1, s3, needleman_wunsch(s1, s3))
-    aligned_23_s2, aligned_23_s3 = get_alignment(s2, s3, needleman_wunsch(s2, s3))
-    # print(aligned_s1, aligned_s2, aligned_s3)
-    print(aligned_12_s1)
-    print(aligned_12_s2)
-    print(aligned_13_s1)
-    print(aligned_13_s3)
-    print(aligned_23_s2)
-    print(aligned_23_s3)
-    if len(aligned_12_s1) == len(aligned_13_s1):
-        return aligned_12_s1, aligned_12_s2, aligned_13_s3
-    elif len(aligned_13_s1) == len(aligned_23_s2):
-        return aligned_13_s1, aligned_23_s2, aligned_13_s3
-    else:
-        return aligned_12_s1, aligned_12_s2, aligned_23_s3
+    aligned_s1, aligned_s2 = get_alignment(s1, s2, needleman_wunsch(s1, s2))
+    return aligned_s1, aligned_s2
 
 
 def recover_from_aligned_candidates(
@@ -1270,24 +1369,75 @@ def needleman_wunsch(x, y):
     return list(alignment)
 
 
-if __name__ == "__main__":
-    # lambda_handler(event, None)
-    print(
-        recover_from_aligned_candidates(
-            70,
-            *align_candidates(
-                "NA2WCME.OB79520E_.2022",
-                "NA2WCMEOB79520E_2022",
-                "NA.2WCMEOB79520E_2022",
-            ),
-        )
-    )
+def get_two_alignment(
+    seq1, seq2, gap_penalty=-1, match_score=1, mismatch_penalty=-5, dummychar="-"
+):
+    # Initialize the scoring matrix
+    def create_matrix(dimensions):
+        rows, cols = dimensions
+        return [[0] * cols for _ in range(rows)]
 
-def create_matrix(dimensions):
-    rows, cols, depth = dimensions
-    return [[[0] * depth for _ in range(cols)] for _ in range(rows)]
+    rows = len(seq1) + 1
+    cols = len(seq2) + 1
+    scores = create_matrix((rows, cols))
+    pointers = create_matrix((rows, cols))
+    alignment = []
 
-def get_alignment(seq1, seq2, seq3, gap_penalty, match_score, mismatch_score):
+    # Fill the first row and column with gap penalties
+    for i in range(rows):
+        scores[i][0] = i * gap_penalty
+        pointers[i][0] = (i - 1, 0)
+    for j in range(cols):
+        scores[0][j] = j * gap_penalty
+        pointers[0][j] = (0, j - 1)
+
+    # Calculate the scores and pointers for each cell
+    for i in range(1, rows):
+        for j in range(1, cols):
+            match = scores[i - 1][j - 1] + (
+                match_score if seq1[i - 1] == seq2[j - 1] else mismatch_penalty
+            )
+            delete = scores[i - 1][j] + gap_penalty
+            insert = scores[i][j - 1] + gap_penalty
+            scores[i][j] = max(match, delete, insert)
+            if scores[i][j] == match:
+                pointers[i][j] = (i - 1, j - 1)
+            elif scores[i][j] == delete:
+                pointers[i][j] = (i - 1, j)
+            else:
+                pointers[i][j] = (i, j - 1)
+
+    # Traceback to construct the alignment
+    i, j = rows - 1, cols - 1
+    while i > 0 or j > 0:
+        di, dj = pointers[i][j]
+        if di == i - 1 and dj == j - 1:
+            aligned_chars = (seq1[i - 1], seq2[j - 1])
+        elif di == i - 1 and dj == j:
+            aligned_chars = (seq1[i - 1], dummychar)
+        else:
+            aligned_chars = (dummychar, seq2[j - 1])
+        alignment.append(aligned_chars)
+        i, j = di, dj
+
+    return alignment[::-1], scores
+
+
+def get_three_alignment(
+    seq1,
+    seq2,
+    seq3,
+    gap_penalty=-1,
+    match_score=1,
+    half_match_score=0.5,
+    mismatch_score=-100,
+    half_mismatch_penalty=-50,
+    dummychar="-",
+):
+    def create_matrix(dimensions):
+        rows, cols, depth = dimensions
+        return [[[0] * depth for _ in range(cols)] for _ in range(rows)]
+
     # Initialize the scoring matrix
     rows = len(seq1) + 1
     cols = len(seq2) + 1
@@ -1296,31 +1446,96 @@ def get_alignment(seq1, seq2, seq3, gap_penalty, match_score, mismatch_score):
     pointers = create_matrix((rows, cols, depth))
     alignments = []
 
+    def get_aligned_word(i):
+        return "".join([chars[i] for chars in alignment])
+
     # Fill the first row, column, and depth with gap penalties
     for i in range(rows):
         scores[i][0][0] = i * gap_penalty
         pointers[i][0][0] = (i - 1, 0, 0)
+    scores_jk = get_two_alignment(
+        seq2,
+        seq3,
+        gap_penalty=gap_penalty,
+        match_score=half_match_score,
+        mismatch_penalty=half_mismatch_penalty,
+        dummychar="-",
+    )[1]
+    for j in range(cols):
+        for k in range(depth):
+            scores[0][j][k] = scores_jk[j][k]
+
     for j in range(cols):
         scores[0][j][0] = j * gap_penalty
         pointers[0][j][0] = (0, j - 1, 0)
+    scores_ik = get_two_alignment(
+        seq1,
+        seq3,
+        gap_penalty=gap_penalty,
+        match_score=half_match_score,
+        mismatch_penalty=half_mismatch_penalty,
+        dummychar="-",
+    )[1]
+    for i in range(rows):
+        for k in range(depth):
+            scores[i][0][k] = scores_ik[i][k]
+
     for k in range(depth):
         scores[0][0][k] = k * gap_penalty
         pointers[0][0][k] = (0, 0, k - 1)
+    scores_ij = get_two_alignment(
+        seq1,
+        seq2,
+        gap_penalty=gap_penalty,
+        match_score=half_match_score,
+        mismatch_penalty=half_mismatch_penalty,
+        dummychar="-",
+    )[1]
+    for i in range(rows):
+        for j in range(cols):
+            scores[i][j][0] = scores_ij[i][j]
 
     # Calculate the scores and pointers for each cell
     for i in range(1, rows):
         for j in range(1, cols):
             for k in range(1, depth):
-                match = scores[i - 1][j - 1][k - 1] + (match_score if seq1[i - 1] == seq2[j - 1] == seq3[k - 1] else mismatch_score)
-                delete = scores[i - 1][j][k] + gap_penalty
-                insert = scores[i][j - 1][k] + gap_penalty
-                insert2 = scores[i][j][k - 1] + gap_penalty
-                scores[i][j][k] = max(match, delete, insert, insert2)
+                match = scores[i - 1][j - 1][k - 1] + (
+                    match_score
+                    if seq1[i - 1] == seq2[j - 1] == seq3[k - 1]
+                    else mismatch_score
+                )
+                match_ij = scores[i - 1][j - 1][k] + (
+                    half_match_score
+                    if seq1[i - 1] == seq2[j - 1]
+                    else half_mismatch_penalty
+                )
+                match_ik = scores[i - 1][j][k - 1] + (
+                    half_match_score
+                    if seq1[i - 1] == seq3[k - 1]
+                    else half_mismatch_penalty
+                )
+                match_jk = scores[i][j - 1][k - 1] + (
+                    half_match_score
+                    if seq2[j - 1] == seq3[k - 1]
+                    else half_mismatch_penalty
+                )
+                insert_i = scores[i - 1][j][k] + gap_penalty
+                insert_j = scores[i][j - 1][k] + gap_penalty
+                insert_k = scores[i][j][k - 1] + gap_penalty
+                scores[i][j][k] = max(
+                    match, insert_i, insert_j, insert_k, match_ij, match_ik, match_jk
+                )
                 if scores[i][j][k] == match:
                     pointers[i][j][k] = (i - 1, j - 1, k - 1)
-                elif scores[i][j][k] == delete:
+                elif scores[i][j][k] == match_ij:
+                    pointers[i][j][k] = (i - 1, j - 1, k)
+                elif scores[i][j][k] == match_ik:
+                    pointers[i][j][k] = (i - 1, j, k - 1)
+                elif scores[i][j][k] == match_jk:
+                    pointers[i][j][k] = (i, j - 1, k - 1)
+                elif scores[i][j][k] == insert_i:
                     pointers[i][j][k] = (i - 1, j, k)
-                elif scores[i][j][k] == insert:
+                elif scores[i][j][k] == insert_j:
                     pointers[i][j][k] = (i, j - 1, k)
                 else:
                     pointers[i][j][k] = (i, j, k - 1)
@@ -1328,28 +1543,75 @@ def get_alignment(seq1, seq2, seq3, gap_penalty, match_score, mismatch_score):
     # Traceback to construct the alignments
     i, j, k = rows - 1, cols - 1, depth - 1
     while i > 0 or j > 0 or k > 0:
+        if sum([i == 0, j == 0, k == 0]) == 1:
+            if i == 0:
+                align_2 = get_two_alignment(
+                    seq2[:j], seq3[:k], gap_penalty, match_score, mismatch_score
+                )[0]
+                align_2 = [
+                    (dummychar, seq2_ch, seq3_ch) for seq2_ch, seq3_ch in align_2
+                ]
+            elif j == 0:
+                align_2 = get_two_alignment(
+                    seq1[:i], seq3[:k], gap_penalty, match_score, mismatch_score
+                )[0]
+                align_2 = [
+                    (seq1_ch, dummychar, seq3_ch) for seq1_ch, seq3_ch in align_2
+                ]
+            else:
+                align_2 = get_two_alignment(
+                    seq1[:i], seq2[:j], gap_penalty, match_score, mismatch_score
+                )[0]
+                align_2 = [
+                    (seq1_ch, seq2_ch, dummychar) for seq1_ch, seq2_ch in align_2
+                ]
+            align_2.extend(alignments[::-1])
+            alignment = align_2
+            return get_aligned_word(0), get_aligned_word(1), get_aligned_word(2)
         di, dj, dk = pointers[i][j][k]
         if di == i - 1 and dj == j - 1 and dk == k - 1:
             alignments.append((seq1[i - 1], seq2[j - 1], seq3[k - 1]))
+        elif di == i - 1 and dj == j - 1 and dk == k:
+            alignments.append((seq1[i - 1], seq2[j - 1], dummychar))
+        elif di == i - 1 and dj == j and dk == k - 1:
+            alignments.append((seq1[i - 1], dummychar, seq3[k - 1]))
+        elif di == i and dj == j - 1 and dk == k - 1:
+            alignments.append((dummychar, seq2[j - 1], seq3[k - 1]))
         elif di == i - 1 and dj == j and dk == k:
-            alignments.append((seq1[i - 1], "-", "-"))
+            alignments.append((seq1[i - 1], dummychar, dummychar))
         elif di == i and dj == j - 1 and dk == k:
-            alignments.append(("-", seq2[j - 1], "-"))
+            alignments.append((dummychar, seq2[j - 1], dummychar))
         else:
-            alignments.append(("-", "-", seq3[k - 1]))
+            alignments.append((dummychar, dummychar, seq3[k - 1]))
         i, j, k = di, dj, dk
 
-    return alignments[::-1]
+    alignment = alignments[::-1]
+    return get_aligned_word(0), get_aligned_word(1), get_aligned_word(2)
+
 
 # Example usage
-sequence1 = "NA2WCME.OB79520E_.2022"
-sequence2 = "NA2WCMEOB79520E_2022"
-sequence3 = "NA.2WCMEOB79520E_2022"
+# sequence1 = "NA2WCME.OB79520E_.2022"
+# sequence2 = "NA2WCMEOB79520E_2022"
+# sequence3 = "NA.2WCMEOB79520E_2022"
 
-gap_penalty = -1
-match_score = 1
-mismatch_score = -1
+# s1, s2, s3 = get_three_alignment(sequence1, sequence2, sequence3)
 
-alignment = get_alignment(sequence1, sequence2, sequence3, gap_penalty, match_score, mismatch_score)
-for aligned_chars in alignment:
-    print(aligned_chars)
+# print(s1)
+# print(s2)
+# print(s3)
+
+
+if __name__ == "__main__":
+    lambda_handler(event, None)
+    # for i in range(0, 1):
+    #     for j in range(0, 1):
+    #         for k in range(0, 1):
+    #             string, score = recover_from_aligned_candidates(
+    #                 70,
+    #                 *get_three_alignment(
+    #                     "Y0020_WCM_79520E_CINTERNAL APPROVED 07282021",
+    #                     "0020 WCM_79520E_C INTERNAL APPROVED 07282021",
+    #                     "Y0020_WCM_79520E_C INTERNAL APPROVED 07282021",
+    #                 ),
+    #             )
+    #             print(f"{string} with {score}")
