@@ -3,3 +3,5 @@ problematic_samples
 tmp
 testing_misc
 **/.DS_Store
+batch
+sampled_docs

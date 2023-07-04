@@ -1,4 +1,3 @@
-
 import boto3
 from decimal import Decimal
 import json
@@ -16,6 +15,7 @@ from PIL import Image as pillow_image
 import pytesseract
 from itertools import product
 from collections import deque
+import pandas as pd
 
 
 print("Loading function")
@@ -59,7 +59,7 @@ content = response["Body"].read().decode("utf-8")
 twenty_digit_codes = json.loads(content)
 twenty_digit_codes.sort(key=lambda x: x[-4:])  # order by year descending
 
-response = client.get_object(Bucket=tables_bucket, Key="approval_codes.json")
+response = client.get_object(Bucket=tables_bucket, Key="approval-codes_corrected.json")
 content = response["Body"].read().decode("utf-8")
 reg_id_approved = json.loads(content)
 reg_id_approved
@@ -305,8 +305,8 @@ def multistage_extraction(get_text_function_list, reg_expressions):
                 break
         if all(matches):
             break
-    print('Tesseract matches:')
-    print('\n'.join([match if match else '' for match in matches]))
+    print("Tesseract matches:")
+    print("\n".join([match if match else "" for match in matches]))
     return matches
 
 
@@ -397,11 +397,11 @@ def get_codes_from_tesseract(ln, file, reg_expressions):
             pillow_image.open(file_in_folder),
             config=cfg,
         )
-    
+
     get_text_function_list = [
         stage1_extraction,
-        stage2_extraction,
-        # stage3_extraction,
+        # stage2_extraction,
+        stage3_extraction,
         # stage4_extraction,
     ]
 
@@ -415,7 +415,8 @@ def get_reg_id(response_json, file):
     # Default values
     twenty_code, twenty_max_conf = "", 0
     approval_code, approval_max_conf = "", 0
-
+    extraction_dict = {}
+    extraction_dict["history"] = []
 
     if "Blocks" in response_json:
         # Get all lines
@@ -448,14 +449,20 @@ def get_reg_id(response_json, file):
                     ln_approval[0] if ln_approval else ln_approval_alternative
                 )
                 if ln_approval_alternative:
-                    print(f'Tesseract app code is {ln_approval_alternative}')
+                    print(f"Tesseract app code is {ln_approval_alternative}")
+                    extraction_dict["history"].append(
+                        f"Tesseract app code is {ln_approval_alternative}"
+                    )
                 else:
-                    print('No Tesseract extraction of app code')
+                    print("No Tesseract extraction of app code")
                 if ln_approval:
-                    print(f'Raw textract is {ln_approval[0]}')
+                    print(f"Textract app code is {ln_approval[0]}")
+                    extraction_dict["history"].append(
+                        f"Textract app code is {ln_approval[0]}"
+                    )
                 else:
-                    print('No Textract extraction of app code')
-                
+                    print("No Textract extraction of app code")
+
                 # The processor removes all non alphanumeric characters, trims whitespace, converting all characters to lower case, then does the comparison
                 match_info = extractOne(
                     extracted_app,
@@ -464,7 +471,6 @@ def get_reg_id(response_json, file):
                     score_cutoff=80,
                     processor=default_process,
                 )
-                print(f'Table app code is {match_info[0]}')
                 # Check if close match to result in table
                 # search through table for best match, cutoff improves speed...if no
                 # score for entry in table lookup lower than cutoff then further processing
@@ -472,10 +478,12 @@ def get_reg_id(response_json, file):
                 # score among them returned
                 # If match above cutoff found then format close to table format
                 if match_info:
+                    print(f"Table app code is {match_info[0]}")
                     ################### Tesseract Extraction and Alignment with Recovery ##########################################
-                    #print(f"extracted_app (Textract possibly Tesseract): {extracted_app},\n ln_approval_alternative (Tesseract): {ln_approval_alternative},\n match_info[0]: {match_info[0]}")
-                    
-                    #If both are found, then there are three codes, so get alignment and use recovered code
+                    # print(f"extracted_app (Textract possibly Tesseract): {extracted_app},\n ln_approval_alternative (Tesseract): {ln_approval_alternative},\n match_info[0]: {match_info[0]}")
+
+                    # If both are found, then there are three codes, so get alignment and use recovered code
+                    extraction_dict["approval_table_lookup"] = match_info[0]
                     if ln_approval_alternative and ln_approval:
                         (
                             approval_code,
@@ -486,23 +494,30 @@ def get_reg_id(response_json, file):
                                 extracted_app,
                                 ln_approval_alternative,
                                 match_info[0],
+                                gap_penalty=-10,
+                                half_match_score=-5,
                             ),
                         )
-                        print("Recovered output from three sources textract/tesseract/table lookup")
-                        print(f'Tesseract code is {ln_approval_alternative}')
-                        print(f'Textract code is {ln_approval[0]}')
-                        print(f'Table code is {match_info[0]}')
-                        print(f'Line confidence is {ln_conf}')
-                        print(f"Recovered Code: {approval_code} with confidence {approval_max_conf}")
-                    else: #Either textract missed, or tesseract, but not both (as we have table match), so use table
+                        extraction_dict["approval_textract"] = extracted_app
+                        extraction_dict["approval_tesseract"] = ln_approval_alternative
+                        print(
+                            "Recovered output from three sources textract/tesseract/table lookup"
+                        )
+                        print(f"Tesseract code is {ln_approval_alternative}")
+                        print(f"Textract code is {ln_approval[0]}")
+                        print(f"Table code is {match_info[0]}")
+                        print(f"Line confidence is {ln_conf}")
+                        print(
+                            f"Recovered Code: {approval_code} with confidence {approval_max_conf}"
+                        )
+                    else:  # Either textract missed, or tesseract, but not both (as we have table match), so use table
                         approval_code = match_info[0]
-                        #previous product with table score was too low in testing, going with line confidence as this is typically already low when
-                        #one of both codes not found
+                        # previous product with table score was too low in testing, going with line confidence as this is typically already low when
+                        # one of both codes not found
                         approval_max_conf = ln_conf
-                        print(f'Table used for app. code: {approval_code}')
-                        print(f'Line confidence is {approval_max_conf}')
-                        print(f'Table match score is {match_info[1]}')
-                        
+                        print(f"Table used for app. code: {approval_code}")
+                        print(f"Line confidence is {approval_max_conf}")
+                        print(f"Table match score is {match_info[1]}")
 
             # It is possible for both approval code and 20 digit code to be on same line, that
             # is why we don't use if else. Check if regex matches and that we have not found one yet.
@@ -511,17 +526,37 @@ def get_reg_id(response_json, file):
                 extracted_20 = ln_twenty[0] if ln_twenty else ln_twenty_alternative
                 # if ln_twenty2:
                 #    extracted_20 = ln_twenty2[0]
+
+                if ln_twenty_alternative:
+                    print(f"Tesseract twenty code is {ln_twenty_alternative}")
+                    extraction_dict["history"].append(
+                        f"Tesseract twenty code is {ln_twenty_alternative}"
+                    )
+                else:
+                    print("No Tesseract extraction of twenty code")
+                if ln_twenty:
+                    print(f"Textract twenty code is {ln_twenty[0]}")
+                    extraction_dict["history"].append(
+                        f"Textract twenty code is {ln_twenty[0]}"
+                    )
+                else:
+                    print("No Textract extraction of twenty code")
+
                 match_info = extractOne(
                     extracted_20,
                     twenty_digit_codes,
                     scorer=ratio,
                     score_cutoff=80,
                     processor=default_process,
+                    gap_penalty=-10,
+                    half_match_score=-5,
                 )
                 if match_info:
+                    print(f"Table app code is {match_info[0]}")
                     ################### Tesseract Extraction and Alignment with Recovery ##########################################
-                    #print(f"extracted_app (Textract possibly Tesseract): {extracted_20},\n ln_approval_alternative (Tesseract): {ln_twenty_alternative},\n match_info[0]: {match_info[0]}")
-                    #If both Tesseract and Textract extraction available, use Table as third code and recover code from the three
+                    # print(f"extracted_app (Textract possibly Tesseract): {extracted_20},\n ln_approval_alternative (Tesseract): {ln_twenty_alternative},\n match_info[0]: {match_info[0]}")
+                    # If both Tesseract and Textract extraction available, use Table as third code and recover code from the three
+                    extraction_dict["twenty_table_lookup"] = match_info[0]
                     if ln_twenty_alternative and ln_twenty:
                         (
                             twenty_code,
@@ -534,21 +569,26 @@ def get_reg_id(response_json, file):
                                 match_info[0],
                             ),
                         )
-                        print("Recovered output from three sources textract/tesseract/table lookup")
-                        print(f'Tesseract code is {ln_twenty_alternative}')
-                        print(f'Textract code is {ln_twenty[0]}')
-                        print(f'Table code is {match_info[0]}')
-                        print(f'Line confidence is {ln_conf}')
-                        print(f"Recovered Code: {twenty_code} with confidence {twenty_max_conf}")
-                    else: 
-                        #Either textract missed, or tesseract, but not both (as we have table match), so use table
+                        extraction_dict["twenty_textract"] = extracted_20
+                        extraction_dict["twenty_tesseract"] = ln_twenty_alternative
+                        print(
+                            "Recovered output from three sources textract/tesseract/table lookup"
+                        )
+                        print(f"Tesseract code is {ln_twenty_alternative}")
+                        print(f"Textract code is {ln_twenty[0]}")
+                        print(f"Table code is {match_info[0]}")
+                        print(f"Line confidence is {ln_conf}")
+                        print(
+                            f"Recovered Code: {twenty_code} with confidence {twenty_max_conf}"
+                        )
+                    else:
+                        # Either textract missed, or tesseract, but not both (as we have table match), so use table
                         twenty_code = match_info[0]
                         twenty_max_conf = ln_conf
-                        print(f'Table used for twenty code: {twenty_code}')
-                        print(f'Line confidence is {twenty_max_conf}')
-                        print(f'Table match score is {match_info[1]}')
-                        
-                        
+                        print(f"Table used for twenty code: {twenty_code}")
+                        print(f"Line confidence is {twenty_max_conf}")
+                        print(f"Table match score is {match_info[1]}")
+
     # Take min of the two conf. levels as the confidence overall that way
     # code only above cutoff if both parts are above cutoff
     if (twenty_max_conf > 0) and (approval_max_conf > 0):
@@ -558,7 +598,8 @@ def get_reg_id(response_json, file):
 
     reg_id_match = " ".join((approval_code, twenty_code))
 
-    return reg_id_match, confidence_reg_id
+    return reg_id_match, confidence_reg_id, extraction_dict
+
 
 def detect_text(bucket, key):
     response = textract.detect_document_text(
@@ -876,6 +917,7 @@ centene_format = {
 
 # --------------- Main handler ------------------
 def lambda_handler(event, context):
+    global extraction_log_df
     """Demonstrates S3 trigger that uses
     textract APIs to detect text, query text in S3 Object.
     """
@@ -979,8 +1021,8 @@ def lambda_handler(event, context):
         if bottom_response:
             print(f"Textract called on {file} sucessfully.")
             # Use document knowledge that RegID at bottom and certain format to grab it
-            reg_id, reg_id_conf = get_reg_id(bottom_response, file.split("/")[-1])
-            return
+            file_name = file.split("/")[-1]
+            reg_id, reg_id_conf, extration_dict = get_reg_id(bottom_response, file_name)
             if reg_id_conf > 0:
                 print(f"RegID code found in {file}.")
                 print(reg_id, reg_id_conf)
@@ -988,221 +1030,238 @@ def lambda_handler(event, context):
                 reg_id_file = file
 
                 centene_format["REGULATORY_APPROVAL_ID"] = reg_id
+
+                with open(f"outputs/output-{output_suffix}.txt", "a") as f:
+                    f.write(
+                        f"\n***********{file_name}***************************************************************\n"
+                    )
+                    f.write(f"{reg_id} .....with confidence {reg_id_conf}")
+                    extration_dict["doc"] = file_name
+                    extration_dict["RegId"] = reg_id
+                    extration_dict["RegIdConf"] = reg_id_conf
+                    extraction_log_df = pd.concat(
+                        [extraction_log_df, pd.DataFrame([extration_dict])],
+                        ignore_index=True,
+                    )
+
                 break
 
+    # TOP PROCESSING TEMPORARILY COMMENTED OUT
+    ################################################################################################
     # In case no name or no regid found, make sure regid blank
-    if not reg_id_file:
-        centene_format["REGULATORY_APPROVAL_ID"] = ""
+    # if not reg_id_file:
+    #     centene_format["REGULATORY_APPROVAL_ID"] = ""
 
-    query_response = []
-    # Define to be cilt if none
-    name_file = None
-    name_conf = 0
-    top_list = sorted(top_list, key=lambda x: x[-13:])
-    print(f"Top list is: {top_list}")
+    # query_response = []
+    # # Define to be cilt if none
+    # name_file = None
+    # name_conf = 0
+    # top_list = sorted(top_list, key=lambda x: x[-13:])
+    # print(f"Top list is: {top_list}")
 
-    for file in top_list:
-        print(f"Top file is : {file}")
-        try:
-            # Calls textract detect_document_text API to detect text in the document S3 object
-            # text_response = detect_text(bucket, key)
-            print(f"Calling Textract on {file}")
-            # Calls textract analyze_document API to query S3 object
-            query_response = textract.analyze_document(
-                Document={"S3Object": {"Bucket": output_bucket, "Name": file}},
-                FeatureTypes=["QUERIES"],
-                QueriesConfig={"Queries": queries},
-            )
-        except Exception as e:
-            print(e)
-            print(
-                "Error processing object {} from bucket {}. ".format(key, bucket)
-                + "Make sure your object and bucket exist and your bucket is in the same region as this function."
-            )
-            # Save error to file
-            # status = save_dict_to_s3(centene_format, output_bucket,output_file_name)
-            # print(status)
-            raise e
-        if query_response:
-            # Store json of parsed response of first page
-            query_data = parse_response_to_json(query_response)
+    # for file in top_list:
+    #     print(f"Top file is : {file}")
+    #     try:
+    #         # Calls textract detect_document_text API to detect text in the document S3 object
+    #         # text_response = detect_text(bucket, key)
+    #         print(f"Calling Textract on {file}")
+    #         # Calls textract analyze_document API to query S3 object
+    #         query_response = textract.analyze_document(
+    #             Document={"S3Object": {"Bucket": output_bucket, "Name": file}},
+    #             FeatureTypes=["QUERIES"],
+    #             QueriesConfig={"Queries": queries},
+    #         )
+    #     except Exception as e:
+    #         print(e)
+    #         print(
+    #             "Error processing object {} from bucket {}. ".format(key, bucket)
+    #             + "Make sure your object and bucket exist and your bucket is in the same region as this function."
+    #         )
+    #         # Save error to file
+    #         # status = save_dict_to_s3(centene_format, output_bucket,output_file_name)
+    #         # print(status)
+    #         raise e
+    #     if query_response:
+    #         # Store json of parsed response of first page
+    #         query_data = parse_response_to_json(query_response)
 
-            # Check if query name available
-            if query_data["ADDRESSEE"]:
-                print(f"Name found on {file}")
-                name_file = file
-                name = query_data["ADDRESSEE"]["value"]
-                name_conf = query_data["ADDRESSEE"]["confidence"]
+    #         # Check if query name available
+    #         if query_data["ADDRESSEE"]:
+    #             print(f"Name found on {file}")
+    #             name_file = file
+    #             name = query_data["ADDRESSEE"]["value"]
+    #             name_conf = query_data["ADDRESSEE"]["confidence"]
 
-                # Function get_next_line searches for name in lines, if not found, returns null
-                # If ad1 returns null, then query name wrong or does not exist in document lines
-                ad1 = get_next_line(name, query_response)
+    #             # Function get_next_line searches for name in lines, if not found, returns null
+    #             # If ad1 returns null, then query name wrong or does not exist in document lines
+    #             ad1 = get_next_line(name, query_response)
 
-                if (
-                    ad1
-                ):  # If ad1 not null, query name is correct, so use it to get fields
-                    ad2 = get_next_line(ad1, query_response)
-                    ad3 = get_next_line(ad2, query_response)
+    #             if (
+    #                 ad1
+    #             ):  # If ad1 not null, query name is correct, so use it to get fields
+    #                 ad2 = get_next_line(ad1, query_response)
+    #                 ad3 = get_next_line(ad2, query_response)
 
-                    if not ad3:  # If no 3rd address line
-                        centene_format["ADDRESSEE"] = name
-                        centene_format["ADDRESS_LINE_1"] = ad1
-                        centene_format["ADDRESS_LINE_2"] = ""
-                        centene_format["CITY"] = get_city(ad2)
-                        centene_format["STATE"] = get_state(ad2)
-                        centene_format["ZIP_CODE_4"] = get_zip(ad2)
-                    else:  # If there is a 3rd address line
-                        centene_format["ADDRESSEE"] = name
-                        centene_format["ADDRESS_LINE_1"] = ad1
-                        centene_format["ADDRESS_LINE_2"] = ad2
-                        centene_format["CITY"] = get_city(ad3)
-                        centene_format["STATE"] = get_state(ad3)
-                        centene_format["ZIP_CODE_4"] = get_zip(ad3)
-                else:  # Query name is wrong or doesn't exist, pass to query defaults
-                    street_address = ""
-                    city = ""
-                    state = ""
-                    zip_code = ""
+    #                 if not ad3:  # If no 3rd address line
+    #                     centene_format["ADDRESSEE"] = name
+    #                     centene_format["ADDRESS_LINE_1"] = ad1
+    #                     centene_format["ADDRESS_LINE_2"] = ""
+    #                     centene_format["CITY"] = get_city(ad2)
+    #                     centene_format["STATE"] = get_state(ad2)
+    #                     centene_format["ZIP_CODE_4"] = get_zip(ad2)
+    #                 else:  # If there is a 3rd address line
+    #                     centene_format["ADDRESSEE"] = name
+    #                     centene_format["ADDRESS_LINE_1"] = ad1
+    #                     centene_format["ADDRESS_LINE_2"] = ad2
+    #                     centene_format["CITY"] = get_city(ad3)
+    #                     centene_format["STATE"] = get_state(ad3)
+    #                     centene_format["ZIP_CODE_4"] = get_zip(ad3)
+    #             else:  # Query name is wrong or doesn't exist, pass to query defaults
+    #                 street_address = ""
+    #                 city = ""
+    #                 state = ""
+    #                 zip_code = ""
 
-                    # If queries found fields use them
-                    if query_data["STREET_ADDRESS"]:
-                        street_address = query_data["STREET_ADDRESS"]["value"]
-                    if query_data["CITY"]:
-                        city = query_data["CITY"]["value"]
-                    if query_data["STATE"]:
-                        state = query_data["STATE"]["value"]
-                    if query_data["ZIP_CODE_4"]:
-                        zip_code = query_data["ZIP_CODE_4"]["value"]
+    #                 # If queries found fields use them
+    #                 if query_data["STREET_ADDRESS"]:
+    #                     street_address = query_data["STREET_ADDRESS"]["value"]
+    #                 if query_data["CITY"]:
+    #                     city = query_data["CITY"]["value"]
+    #                 if query_data["STATE"]:
+    #                     state = query_data["STATE"]["value"]
+    #                 if query_data["ZIP_CODE_4"]:
+    #                     zip_code = query_data["ZIP_CODE_4"]["value"]
 
-                    # Now input the values we have
-                    centene_format["ADDRESSEE"] = name
-                    centene_format["ADDRESS_LINE_1"] = street_address
-                    centene_format["ADDRESS_LINE_2"] = ""
-                    centene_format["CITY"] = city
-                    centene_format["STATE"] = state
-                    centene_format["ZIP_CODE_4"] = zip_code
+    #                 # Now input the values we have
+    #                 centene_format["ADDRESSEE"] = name
+    #                 centene_format["ADDRESS_LINE_1"] = street_address
+    #                 centene_format["ADDRESS_LINE_2"] = ""
+    #                 centene_format["CITY"] = city
+    #                 centene_format["STATE"] = state
+    #                 centene_format["ZIP_CODE_4"] = zip_code
 
-                break  # break out of loop
+    #             break  # break out of loop
 
-    # Finally, update the query_data with new confidence values
-    # and values based on what we found
-    # query_data
-    # TEMPORARY: make fields derived from name have same confidence
-    # We may want to pass in the confidence on the line (e.g. on City line, state line
-    # etc. instead
-    # OPTIONAL: Make confidence minimum of all fields, that way all fields
-    # show in the A2I when one field is below cutoff level
+    # # Finally, update the query_data with new confidence values
+    # # and values based on what we found
+    # # query_data
+    # # TEMPORARY: make fields derived from name have same confidence
+    # # We may want to pass in the confidence on the line (e.g. on City line, state line
+    # # etc. instead
+    # # OPTIONAL: Make confidence minimum of all fields, that way all fields
+    # # show in the A2I when one field is below cutoff level
 
-    name_rule_data = {
-        "value": centene_format["ADDRESSEE"],
-        "confidence": name_conf,
-        "block": None,
-    }
-    ad1_rule_data = {
-        "value": centene_format["ADDRESS_LINE_1"],
-        "confidence": name_conf,
-        "block": None,
-    }
-    ad2_rule_data = {
-        "value": centene_format["ADDRESS_LINE_2"],
-        "confidence": name_conf,
-        "block": None,
-    }
-    city_rule_data = {
-        "value": centene_format["CITY"],
-        "confidence": name_conf,
-        "block": None,
-    }
-    state_rule_data = {
-        "value": centene_format["STATE"],
-        "confidence": name_conf,
-        "block": None,
-    }
-    zip_rule_data = {
-        "value": centene_format["ZIP_CODE_4"],
-        "confidence": name_conf,
-        "block": None,
-    }
-    # reg_id moved to bottom to match where it is found on page
-    # labelers wanted the webpage they see to display regid as the last field
-    reg_id_rule_data = {
-        "value": centene_format["REGULATORY_APPROVAL_ID"],
-        "confidence": reg_id_conf,
-        "block": None,
-    }
-    rules_data = {
-        "ADDRESSEE": name_rule_data,
-        "ADDRESS_LINE_1": ad1_rule_data,
-        "ADDRESS_LINE_2": ad2_rule_data,
-        "CITY": city_rule_data,
-        "STATE": state_rule_data,
-        "ZIP_CODE_4": zip_rule_data,
-        "REGULATORY_APPROVAL_ID": reg_id_rule_data,
-    }
+    # name_rule_data = {
+    #     "value": centene_format["ADDRESSEE"],
+    #     "confidence": name_conf,
+    #     "block": None,
+    # }
+    # ad1_rule_data = {
+    #     "value": centene_format["ADDRESS_LINE_1"],
+    #     "confidence": name_conf,
+    #     "block": None,
+    # }
+    # ad2_rule_data = {
+    #     "value": centene_format["ADDRESS_LINE_2"],
+    #     "confidence": name_conf,
+    #     "block": None,
+    # }
+    # city_rule_data = {
+    #     "value": centene_format["CITY"],
+    #     "confidence": name_conf,
+    #     "block": None,
+    # }
+    # state_rule_data = {
+    #     "value": centene_format["STATE"],
+    #     "confidence": name_conf,
+    #     "block": None,
+    # }
+    # zip_rule_data = {
+    #     "value": centene_format["ZIP_CODE_4"],
+    #     "confidence": name_conf,
+    #     "block": None,
+    # }
+    # # reg_id moved to bottom to match where it is found on page
+    # # labelers wanted the webpage they see to display regid as the last field
+    # reg_id_rule_data = {
+    #     "value": centene_format["REGULATORY_APPROVAL_ID"],
+    #     "confidence": reg_id_conf,
+    #     "block": None,
+    # }
+    # rules_data = {
+    #     "ADDRESSEE": name_rule_data,
+    #     "ADDRESS_LINE_1": ad1_rule_data,
+    #     "ADDRESS_LINE_2": ad2_rule_data,
+    #     "CITY": city_rule_data,
+    #     "STATE": state_rule_data,
+    #     "ZIP_CODE_4": zip_rule_data,
+    #     "REGULATORY_APPROVAL_ID": reg_id_rule_data,
+    # }
 
-    # Validate business rules
-    con = Condition(rules_data, rules)
-    rule_missed, rule_checked = con.check_all()
-    rule_missed_string = ", ".join(element["message"] for element in rule_missed)
-    centene_format["RULE_MISSED_COUNT"] = len(rule_missed)
-    centene_format["RULE_MISSED_STRING"] = rule_missed_string
+    # # Validate business rules
+    # con = Condition(rules_data, rules)
+    # rule_missed, rule_checked = con.check_all()
+    # rule_missed_string = ", ".join(element["message"] for element in rule_missed)
+    # centene_format["RULE_MISSED_COUNT"] = len(rule_missed)
+    # centene_format["RULE_MISSED_STRING"] = rule_missed_string
 
-    # Save filenames
-    output_file_name = f"{key[:-4]}.json"
-    rm_file_name = f"{key[:-4]}-rule-missed.json"
-    rs_file_name = f"{key[:-4]}-rule-checked.json"
+    # # Save filenames
+    # output_file_name = f"{key[:-4]}.json"
+    # rm_file_name = f"{key[:-4]}-rule-missed.json"
+    # rs_file_name = f"{key[:-4]}-rule-checked.json"
 
-    # Save data to s3 and return if save was successful or not
-    status = save_dict_to_s3(centene_format, output_bucket, output_file_name)
-    # Save rule missed list
-    s3.Object(output_bucket, rm_file_name).put(Body=json.dumps(rule_missed))
-    # Save rule satisfied list
-    s3.Object(output_bucket, rs_file_name).put(Body=json.dumps(rule_checked))
+    # # Save data to s3 and return if save was successful or not
+    # status = save_dict_to_s3(centene_format, output_bucket, output_file_name)
+    # # Save rule missed list
+    # s3.Object(output_bucket, rm_file_name).put(Body=json.dumps(rule_missed))
+    # # Save rule satisfied list
+    # s3.Object(output_bucket, rs_file_name).put(Body=json.dumps(rule_checked))
 
-    # -------Image for A2I--------------------------------------
-    s3_filename_a2i = f"{key[:-4]}-image-for-A2I.png"
+    # # -------Image for A2I--------------------------------------
+    # s3_filename_a2i = f"{key[:-4]}-image-for-A2I.png"
 
-    # Combine the partial pages where the fields were found
-    if name_file and reg_id_file:
-        name_file_parts = name_file.split("/")
-        reg_id_file_parts = reg_id_file.split("/")
-        tmp_name_file = "tmp/" + name_file_parts[-1]
-        tmp_regid_file = "tmp/" + reg_id_file_parts[-1]
-        # Recombine creates an image in tmp called image-for-A2I.png
-        # using the top and bottom images where names and resp. codes
-        # were found.
-        recombine(tmp_name_file, tmp_regid_file)
+    # # Combine the partial pages where the fields were found
+    # if name_file and reg_id_file:
+    #     name_file_parts = name_file.split("/")
+    #     reg_id_file_parts = reg_id_file.split("/")
+    #     tmp_name_file = "tmp/" + name_file_parts[-1]
+    #     tmp_regid_file = "tmp/" + reg_id_file_parts[-1]
+    #     # Recombine creates an image in tmp called image-for-A2I.png
+    #     # using the top and bottom images where names and resp. codes
+    #     # were found.
+    #     recombine(tmp_name_file, tmp_regid_file)
 
-        # We upload that to the correct bucket and prefix
-        print(f"s3_filename is {s3_filename_a2i}")
-        local_a2i_image_path = "tmp/image-for-A2I.png"
-        client.upload_file(local_a2i_image_path, output_bucket, s3_filename_a2i)
+    #     # We upload that to the correct bucket and prefix
+    #     print(f"s3_filename is {s3_filename_a2i}")
+    #     local_a2i_image_path = "tmp/image-for-A2I.png"
+    #     client.upload_file(local_a2i_image_path, output_bucket, s3_filename_a2i)
 
-    else:  # CILT
-        # upload cilt image to correct bucket with prefix
+    # else:  # CILT
+    #     # upload cilt image to correct bucket with prefix
 
-        local_a2i_image_path = "tmp/image-for-A2I.png"
-        # upload cilt image
-        client.upload_file("tmp/cilt.png", output_bucket, s3_filename_a2i)
+    #     local_a2i_image_path = "tmp/image-for-A2I.png"
+    #     # upload cilt image
+    #     client.upload_file("tmp/cilt.png", output_bucket, s3_filename_a2i)
 
-    # -----------------Create A2I labeling job--------------------------
+    # # -----------------Create A2I labeling job--------------------------
 
-    # -----------------Clean up------------------------------------------
-    # Get disk usage of tmp directory
-    usage = os.statvfs("tmp")
-    total_space = usage.f_frsize * usage.f_blocks
-    used_space = usage.f_frsize * (usage.f_blocks - usage.f_bfree)
-    available_space = usage.f_frsize * usage.f_bavail
+    # # -----------------Clean up------------------------------------------
+    # # Get disk usage of tmp directory
+    # usage = os.statvfs("tmp")
+    # total_space = usage.f_frsize * usage.f_blocks
+    # used_space = usage.f_frsize * (usage.f_blocks - usage.f_bfree)
+    # available_space = usage.f_frsize * usage.f_bavail
 
-    # Convert to human-readable format
-    total_space_gb = total_space / (1024**3)
-    used_space_gb = used_space / (1024**3)
-    available_space_gb = available_space / (1024**3)
+    # # Convert to human-readable format
+    # total_space_gb = total_space / (1024**3)
+    # used_space_gb = used_space / (1024**3)
+    # available_space_gb = available_space / (1024**3)
 
-    # Print the disk usage
-    print(f"Total Space: {total_space_gb:.2f} GB")
-    print(f"Used Space: {used_space_gb:.2f} GB")
-    print(f"Available Space: {available_space_gb:.2f} GB")
+    # # Print the disk usage
+    # print(f"Total Space: {total_space_gb:.2f} GB")
+    # print(f"Used Space: {used_space_gb:.2f} GB")
+    # print(f"Available Space: {available_space_gb:.2f} GB")
+    ################################################################################################
 
     # Iterate over all files in the directory
     for filename in os.listdir("tmp"):
@@ -1211,41 +1270,7 @@ def lambda_handler(event, context):
         os.remove(file_path)  # Remove the file
         print(f"Removed file: {filename}")
 
-    return status, centene_format, rule_missed, rule_checked
-
-
-event = {
-    "Records": [
-        {
-            "eventVersion": "2.1",
-            "eventSource": "aws:s3",
-            "awsRegion": "us-east-1",
-            "eventTime": "2019-09-03T19:37:27.192Z",
-            "eventName": "ObjectCreated:Put",
-            "userIdentity": {"principalId": "AWS:AIDAINPONIXQXHT3IKHL2"},
-            "requestParameters": {"sourceIPAddress": "205.255.255.255"},
-            "responseElements": {
-                "x-amz-request-id": "D82B88E5F771F645",
-                "x-amz-id-2": "vlR7PnpV2Ce81l0PRw6jlUpck7Jo5ZsQjryTjKlc5aLWGVHPZLj5NeC6qMa0emYBDXOo6QBU0Wo=",
-            },
-            "s3": {
-                "s3SchemaVersion": "1.0",
-                "configurationId": "828aa6fc-f7b5-4305-8584-487c791949c1",
-                "bucket": {
-                    "name": test_bucket_name,
-                    "ownerIdentity": {"principalId": "A3I5XTEXAMAI3E"},
-                    "arn": "arn:aws:s3:::lambda-artifacts-deafc19498e3f2df",
-                },
-                "object": {
-                    "key": "real-doc/C001942515.tiff",
-                    "size": 1305107,
-                    "eTag": "b21b84d653bb07b05b1e6b33684dc11b",
-                    "sequencer": "0C0F6F405D6ED209E1",
-                },
-            },
-        }
-    ]
-}
+    # return status, centene_format, rule_missed, rule_checked
 
 
 def get_two_alignment(s1, s2, dummychar="-"):
@@ -1589,6 +1614,105 @@ def get_three_alignment(
     return get_aligned_word(0), get_aligned_word(1), get_aligned_word(2)
 
 
+from itertools import product
+from collections import deque
+
+
+def needleman_wunsch(x, y, gap: str = "-"):
+    """Run the Needleman-Wunsch algorithm on two sequences.
+
+    x, y -- sequences.
+
+    Code based on pseudocode in Section 3 of:
+
+    Naveed, Tahir; Siddiqui, Imitaz Saeed; Ahmed, Shaftab.
+    "Parallel Needleman-Wunsch Algorithm for Grid." n.d.
+    https://upload.wikimedia.org/wikipedia/en/c/c4/ParallelNeedlemanAlgorithm.pdf
+    """
+    N, M = len(x), len(y)
+    s = lambda a, b: int(a == b)
+
+    DIAG = -1, -1
+    LEFT = -1, 0
+    UP = 0, -1
+
+    # Create tables F and Ptr
+    F = {}
+    Ptr = {}
+
+    F[-1, -1] = 0
+    for i in range(N):
+        F[i, -1] = -i
+    for j in range(M):
+        F[-1, j] = -j
+
+    option_Ptr = DIAG, LEFT, UP
+    for i, j in product(range(N), range(M)):
+        option_F = (
+            F[i - 1, j - 1] + s(x[i], y[j]),
+            F[i - 1, j] - 1,
+            F[i, j - 1] - 1,
+        )
+        F[i, j], Ptr[i, j] = max(zip(option_F, option_Ptr))
+
+    # Work backwards from (N - 1, M - 1) to (0, 0)
+    # to find the best alignment.
+    alignment = deque()
+    i, j = N - 1, M - 1
+    while i >= 0 and j >= 0:
+        direction = Ptr[i, j]
+        if direction == DIAG:
+            element = i, j
+        elif direction == LEFT:
+            element = i, None
+        elif direction == UP:
+            element = None, j
+        alignment.appendleft(element)
+        di, dj = direction
+        i, j = i + di, j + dj
+    while i >= 0:
+        alignment.appendleft((i, None))
+        i -= 1
+    while j >= 0:
+        alignment.appendleft((None, j))
+        j -= 1
+    aligned_x = "".join(gap if i is None else x[i] for i, _ in alignment)
+    aligned_y = "".join(gap if j is None else y[j] for _, j in alignment)
+    return list(aligned_x), list(aligned_y)
+
+
+def align(s1, s2, s3):
+    # align s1 to s2 and to s3
+    aligned_s1_12, _ = needleman_wunsch(s1, s2, gap="+")
+    aligned_s1_13, _ = needleman_wunsch(s1, s3, gap="+")
+    # align s2 to s1 and s3
+    aligned_s2_21, _ = needleman_wunsch(s2, s1, gap="+")
+    aligned_s2_23, _ = needleman_wunsch(s2, s3, gap="+")
+    # align s3 to s1 and s2
+    aligned_s3_31, _ = needleman_wunsch(s3, s1, gap="+")
+    aligned_s3_32, _ = needleman_wunsch(s3, s2, gap="+")
+
+    # Next, 'self-align', that is, align the two distinct alignments we obtained above for each string
+    # self-align s1
+    self_aligned_s1, _ = needleman_wunsch(
+        "".join(aligned_s1_12), "".join(aligned_s1_13)
+    )
+    # self-align s2
+    self_aligned_s2, _ = needleman_wunsch(
+        "".join(aligned_s2_21), "".join(aligned_s2_23)
+    )
+    # self-align s3
+    self_aligned_s3, _ = needleman_wunsch(
+        "".join(aligned_s3_31), "".join(aligned_s3_32)
+    )
+
+    # there will be a mix of '+' and '-' characters, we replace all '+' with '-' so we can continue using previous code downstream
+    self_aligned_s1 = "".join(self_aligned_s1).replace("+", "-")
+    self_aligned_s2 = "".join(self_aligned_s2).replace("+", "-")
+    self_aligned_s3 = "".join(self_aligned_s3).replace("+", "-")
+    return self_aligned_s1, self_aligned_s2, self_aligned_s3
+
+
 # Example usage
 # sequence1 = "NA2WCME.OB79520E_.2022"
 # sequence2 = "NA2WCMEOB79520E_2022"
@@ -1601,17 +1725,137 @@ def get_three_alignment(
 # print(s3)
 
 
+def get_event(tif_key):
+    event = {
+        "Records": [
+            {
+                "eventVersion": "2.1",
+                "eventSource": "aws:s3",
+                "awsRegion": "us-east-1",
+                "eventTime": "2019-09-03T19:37:27.192Z",
+                "eventName": "ObjectCreated:Put",
+                "userIdentity": {"principalId": "AWS:AIDAINPONIXQXHT3IKHL2"},
+                "requestParameters": {"sourceIPAddress": "205.255.255.255"},
+                "responseElements": {
+                    "x-amz-request-id": "D82B88E5F771F645",
+                    "x-amz-id-2": "vlR7PnpV2Ce81l0PRw6jlUpck7Jo5ZsQjryTjKlc5aLWGVHPZLj5NeC6qMa0emYBDXOo6QBU0Wo=",
+                },
+                "s3": {
+                    "s3SchemaVersion": "1.0",
+                    "configurationId": "828aa6fc-f7b5-4305-8584-487c791949c1",
+                    "bucket": {
+                        "name": test_bucket_name,
+                        "ownerIdentity": {"principalId": "A3I5XTEXAMAI3E"},
+                        "arn": "arn:aws:s3:::lambda-artifacts-deafc19498e3f2df",
+                    },
+                    "object": {
+                        "key": tif_key,
+                        "size": 1305107,
+                        "eTag": "b21b84d653bb07b05b1e6b33684dc11b",
+                        "sequencer": "0C0F6F405D6ED209E1",
+                    },
+                },
+            }
+        ]
+    }
+    return event
+
+
+# INPUT SETUP
+########################################################################################################################
+# tif_keys_list = [f"real-doc/C00194251{i}.tiff" for i in range(10) if i != 3]
+
+
+tif_keys_list = sorted(
+    [f"real-doc/{file_name}" for file_name in os.listdir("./sampled_docs")]
+)
+
+
+events = [get_event(tif_key) for tif_key in tif_keys_list]
+
+# output_suffix = (
+#     "idp-textract-prod10525-target 06292023 CUR6470-01_4010_20230628_0001157189"
+# )
+
+output_suffix = "centenetransfer Centenetesting"
+########################################################################################################################
+extraction_log_df = pd.DataFrame()
+
+dummy_extration_dict = {}
+dummy_extration_dict["doc"] = None
+dummy_extration_dict["RegId"] = None
+dummy_extration_dict["RegIdConf"] = None
+dummy_extration_dict["approval_textract"] = None
+dummy_extration_dict["approval_tesseract"] = None
+dummy_extration_dict["approval_table_lookup"] = None
+dummy_extration_dict["twenty_textract"] = None
+dummy_extration_dict["twenty_tesseract"] = None
+dummy_extration_dict["twenty_table_lookup"] = None
+dummy_extration_dict["history"] = None
+
+extraction_log_df = pd.concat(
+    [extraction_log_df, pd.DataFrame([dummy_extration_dict])],
+    ignore_index=True,
+)
+
 if __name__ == "__main__":
-    lambda_handler(event, None)
-    # for i in range(0, 1):
-    #     for j in range(0, 1):
-    #         for k in range(0, 1):
-    #             string, score = recover_from_aligned_candidates(
-    #                 70,
-    #                 *get_three_alignment(
-    #                     "Y0020_WCM_79520E_CINTERNAL APPROVED 07282021",
-    #                     "0020 WCM_79520E_C INTERNAL APPROVED 07282021",
-    #                     "Y0020_WCM_79520E_C INTERNAL APPROVED 07282021",
-    #                 ),
-    #             )
-    #             print(f"{string} with {score}")
+    for event in events[150:]:
+        lambda_handler(event, None)
+    extraction_log_df.to_csv(f"outputs/extraction_log_{output_suffix}.csv")
+#     for i in range(0, 1):
+#         for j in range(0, 1):
+#             for k in range(0, 1):
+#                 string, score = recover_from_aligned_candidates(
+#                     70,
+#                     *get_three_alignment(
+#                         "Y0020_WCM_100186E_C INTERNAL APPROVED 07252022",
+#                         "Y0020_WCM_100186E_ C INTERNAL SMAL APPROVED 07252022",
+#                         "Y0020 WCM 100186E_C INTERNAL APPROVED 07252022",
+#                         gap_penalty=-10,
+#                         half_match_score=-5,
+#                     ),
+#                 )
+#                 print(f"{string} with {score}")
+
+
+# print(
+#     "\n".join(
+#         get_three_alignment(
+#             "Y0020_WCM_100186E_C INTERNAL APPROVED 07252022",
+#             "Y0020_WCM_100186E_ C INTERNAL SMAL APPROVED 07252022",
+#             "Y0020_WCM_100186E_C INTERNAL APPROVED 07252022",
+#             gap_penalty=-10,
+#             half_match_score=-5,
+#         )
+#     )
+# )
+# import random
+
+
+# def sample_across_batches(bucket_name, folder_path, num_files=2, local_folder='sample', s3_client=client):
+#     # Retrieve the list of subfolders in the specified folder
+#     response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder_path, Delimiter='/')
+#     subfolders = [prefix['Prefix'] for prefix in response.get('CommonPrefixes', [])]
+
+#     # Sample uniformly at random from the subfolders to download files from
+#     selected_subfolders = random.choices(subfolders, k=num_files)
+
+#     # Create the local target folder if it does not exist
+#     if not os.path.isdir(local_folder):
+#         os.mkdir(local_folder)
+
+#     # Download the files
+#     for subfolder in selected_subfolders:
+#         # Retrieve the list of objects (files) in the subfolder
+#         response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=subfolder)
+#         files = [file['Key'] for file in response.get('Contents', [])]
+
+#         # Sample a file uniformly at random
+#         file_to_download = random.choice(files[1:])
+
+#         # Download the selected file
+#         local_file_name = '-'.join(file_to_download.split('/')[-2:])
+#         s3_client.download_file(bucket_name, file_to_download, os.path.join(local_folder, local_file_name))
+
+# if __name__ == "__main__":
+#     sample_across_batches('centene-test', 'real-doc/')
