@@ -548,8 +548,6 @@ def get_reg_id(response_json, file):
                     scorer=ratio,
                     score_cutoff=80,
                     processor=default_process,
-                    gap_penalty=-10,
-                    half_match_score=-5,
                 )
                 if match_info:
                     print(f"Table app code is {match_info[0]}")
@@ -567,6 +565,8 @@ def get_reg_id(response_json, file):
                                 ln_twenty_alternative,
                                 extracted_20,
                                 match_info[0],
+                                gap_penalty=-10,
+                                half_match_score=-5,
                             ),
                         )
                         extraction_dict["twenty_textract"] = extracted_20
@@ -1799,7 +1799,7 @@ extraction_log_df = pd.concat(
 )
 
 if __name__ == "__main__":
-    for event in events[150:]:
+    for event in events[:50]:
         lambda_handler(event, None)
     extraction_log_df.to_csv(f"outputs/extraction_log_{output_suffix}.csv")
 #     for i in range(0, 1):
