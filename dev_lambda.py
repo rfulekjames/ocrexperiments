@@ -18,6 +18,11 @@ from collections import deque
 import pandas as pd
 
 
+TEXTRACT_CODE_HI_CONFIDENCE_THRESHOLD = 91
+TEXTRACT_CODE_CONFIDENCE_THRESHOLD = 70
+TESSERACT_CODE_CONFIDENCE_THRESHOLD = 66
+TESSERACT_CODE_HI_CONFIDENCE_THRESHOLD = 87
+
 print("Loading function")
 
 test_bucket_name = "centene-test"
@@ -59,7 +64,7 @@ content = response["Body"].read().decode("utf-8")
 twenty_digit_codes = json.loads(content)
 twenty_digit_codes.sort(key=lambda x: x[-4:])  # order by year descending
 
-response = client.get_object(Bucket=tables_bucket, Key="approval-codes_corrected.json")
+response = client.get_object(Bucket=tables_bucket, Key="approval_codes_corrected.json")
 content = response["Body"].read().decode("utf-8")
 reg_id_approved = json.loads(content)
 reg_id_approved
@@ -290,24 +295,63 @@ def multistage_extraction(get_text_function_list, reg_expressions):
     multistage_extraction extracts text in multiple stages defined by arguments
     :param get_text_function_list:  list of functions to extract text
     :param reg_expressions: list of regular expressions to get a match
-    :return: List: None if no match found for the corresponding regular expression and the matched code otherwise.
+    :return: List: None if no match found for the corresponding regular expression and a pair
+    of the matched text with confidence otherwise.
     """
-    matches = len(reg_expressions) * [None]
+    matches_with_confidence = len(reg_expressions) * [None]
     for get_text_function in get_text_function_list:
-        texts = get_text_function().split("\n")
-        for text in texts:
-            matches_found = [reg_exp.findall(text) for reg_exp in reg_expressions]
-            matches = [
-                match[0] if not matches[i] and match else matches[i]
-                for i, match in enumerate(matches_found)
-            ]
-            if all(matches):
-                break
-        if all(matches):
+        text, confidence = get_text_function()
+        matches_found = [reg_exp.findall(text) for reg_exp in reg_expressions]
+        matches_with_confidence = [
+            (match[0], confidence)
+            if not matches_with_confidence[i] and match
+            else matches_with_confidence[i]
+            for i, match in enumerate(matches_found)
+        ]
+        if all(matches_with_confidence):
             break
     print("Tesseract matches:")
-    print("\n".join([match if match else "" for match in matches]))
-    return matches
+    print(
+        "\n".join(
+            [
+                f"{match[0]}     with conf:{match[1]}" if match else ""
+                for match in matches_with_confidence
+            ]
+        )
+    )
+    return matches_with_confidence
+
+
+def get_tesseract_text_with_confidence(file, cfg):
+    """
+    gets text extracted by tesseract with average confidence over words
+    :param file: path to the image file
+    :cfg: config string for tesseract
+    :return: extracted_text, confidence
+    """
+    data = pytesseract.image_to_data(
+        pillow_image.open(file),
+        config=cfg,
+        output_type=pytesseract.Output.DICT,
+    )
+    return get_tesseract_text_from_data_with_confidence(data)
+
+
+def get_tesseract_text_from_data_with_confidence(data):
+    """
+    gets concatenated words from data object returned by tesseract separated by spaces
+    with confidence
+    :param data: data object returned by tesseract
+    :return: extracted_text, confidence
+    """
+    words, confidence, total_chars = [], 0, 0
+    for i, word_text in enumerate(data["text"]):
+        if data["conf"][i] != -1:
+            confidence += int(data["conf"][i]) * len(word_text)
+            total_chars += len(word_text)
+            words.append(word_text)
+    average_confidence = confidence / total_chars if total_chars else 0
+    return " ".join(words), average_confidence
 
 
 def get_codes_from_tesseract(ln, file, reg_expressions):
@@ -359,10 +403,7 @@ def get_codes_from_tesseract(ln, file, reg_expressions):
             )
         except subprocess.CalledProcessError as e:
             print(f"Code extraction failed: {e}")
-        return pytesseract.image_to_string(
-            pillow_image.open(file_in_folder_cropped_morphed),
-            config=cfg,
-        )
+        return get_tesseract_text_with_confidence(file_in_folder_cropped_morphed, cfg)
 
     def stage2_extraction():
         try:
@@ -381,31 +422,178 @@ def get_codes_from_tesseract(ln, file, reg_expressions):
             )
         except subprocess.CalledProcessError as e:
             print(f"Code extraction failed: {e}")
-        return pytesseract.image_to_string(
-            pillow_image.open(file_in_folder_morphed),
-            config=cfg,
-        )
+        return get_tesseract_text_with_confidence(file_in_folder_morphed, cfg)
 
     def stage3_extraction():
-        return pytesseract.image_to_string(
-            pillow_image.open(file_in_folder_cropped),
-            config=cfg,
-        )
+        return get_tesseract_text_with_confidence(file_in_folder_cropped, cfg)
 
     def stage4_extraction():
-        return pytesseract.image_to_string(
-            pillow_image.open(file_in_folder),
-            config=cfg,
-        )
+        return get_tesseract_text_with_confidence(file_in_folder, cfg)
 
     get_text_function_list = [
         stage1_extraction,
         # stage2_extraction,
         stage3_extraction,
-        # stage4_extraction,
+        stage4_extraction,
     ]
 
     return multistage_extraction(get_text_function_list, reg_expressions)
+
+
+def average_tesseract_textract_confidence(tesseract_conf, textract_conf):
+    return min(100, (tesseract_conf * 1.15 + textract_conf) / 2)
+
+
+def get_reg_id_part(
+    ln_first,
+    ln_conf,
+    ln_alternative,
+    code,
+    code_conf,
+    code_name,
+    extraction_dict,
+    table,
+):
+    if (ln_first or ln_alternative) and code == "":
+        extracted_code = ln_first[0] if ln_first else ln_alternative[0]
+        if ln_alternative:
+            print(f"Tesseract {code} is {ln_alternative[0]}")
+            extraction_dict["history"].append(
+                f"Tesseract {code} is {ln_alternative[0]}"
+            )
+        else:
+            print(f"No Tesseract extraction of {code}")
+        if ln_first:
+            print(f"Textract {code} is {ln_first[0]}")
+            extraction_dict["history"].append(f"Textract {code} is {ln_first[0]}")
+        else:
+            print(f"No Textract extraction of {code}")
+
+        # The processor removes all non alphanumeric characters, trims whitespace, converting all characters to lower case, then does the comparison
+        match_info = extractOne(
+            extracted_code,
+            table,
+            scorer=ratio,
+            score_cutoff=80,
+            processor=default_process,
+        )
+
+        # Check if close match to result in table
+        # search through table for best match, cutoff improves speed...if no
+        # score for entry in table lookup lower than cutoff then further processing
+        # on that entry stopped. If all items in table below cutoff then highest
+        # score among them returned
+        # If match above cutoff found then format close to table format
+        if match_info:
+            print(f"Table {code} is {match_info[0]}")
+            ################### Tesseract Extraction and Alignment with Recovery ##########################################
+            # print(f"extracted_code (Textract possibly Tesseract): {extracted_code},\n ln_alternative (Tesseract): {ln_alternative},\n match_info[0]: {match_info[0]}")
+
+            extracted_info_without_spaces = extracted_code.replace(" ", "")
+            match_without_spaces = match_info[0].replace(" ", "")
+            # If table match and code differ only in spaces return table code.
+            if match_without_spaces == extracted_info_without_spaces:
+                code = match_info[0]
+                code_conf = ln_conf
+                print(f"Table used for {code_name}: {code}")
+                print(f"Line confidence is {code_conf}")
+                print(f"Table match score is {match_info[1]}")
+                return code, code_conf
+
+            match_info_aligned, _ = get_two_alignment(extracted_code, match_info[0])
+            extraction_dict[f"{code_name}_table_lookup"] = match_info[0]
+            # is extracted string very close to the table lookup string?
+            is_good_match = (
+                abs(len(extracted_code) - len(match_info[0])) < 5
+                and abs(
+                    len(match_info_aligned)
+                    - ((len(extracted_code) + len(match_info[0]) / 2))
+                )
+                < 3
+            )
+            two_alignment_textract_tesseract = None
+            if (
+                not is_good_match
+                and ln_conf > TEXTRACT_CODE_HI_CONFIDENCE_THRESHOLD
+                and (
+                    ln_first
+                    and ln_alternative
+                    and abs(len(ln_first[0]) - len(ln_alternative[0])) < 4
+                )
+            ):
+                two_alignment_textract_tesseract, _ = get_two_alignment(
+                    ln_first[0], ln_alternative[0]
+                )
+
+            # if the table code is far from the extracted code and
+            # textract and tesseract codes are close to each other
+            # and textract has high confidence return textract
+            # (meant to cover the case when a code is missing in the table)
+            if (
+                two_alignment_textract_tesseract
+                and abs(
+                    (len(ln_first[0]) + len(ln_alternative[0])) / 2
+                    - len(two_alignment_textract_tesseract)
+                )
+                < 3
+            ):
+                code = ln_first[0]
+                code_conf = ln_conf
+                print(f"Textract code used {code}")
+                print(f"Textract line confidence is {code_conf}")
+            elif (
+                ln_alternative
+                and ln_first
+                and ln_conf > TEXTRACT_CODE_CONFIDENCE_THRESHOLD
+                and ln_alternative[1] > TESSERACT_CODE_CONFIDENCE_THRESHOLD
+            ):
+                (
+                    code,
+                    code_conf,
+                ) = recover_from_aligned_candidates(
+                    average_tesseract_textract_confidence(ln_alternative[1], ln_conf),
+                    *get_three_alignment(
+                        extracted_code,
+                        ln_alternative[0],
+                        match_info[0],
+                        gap_penalty=-10,
+                        half_match_score=-5,
+                    ),
+                )
+                extraction_dict[f"textract_conf_{code_name}"] = round(ln_conf, 2)
+                extraction_dict[f"tesseract_conf_{code_name}"] = round(
+                    ln_alternative[1], 2
+                )
+                extraction_dict[f"{code_name}_textract"] = extracted_code
+                extraction_dict[f"{code_name}_tesseract"] = ln_alternative[0]
+                print(
+                    "Recovered output from three sources textract/tesseract/table lookup"
+                )
+                print(f"Tesseract code is {ln_alternative[0]}")
+                print(f"Textract code is {ln_first[0]}")
+                print(f"Table code is {match_info[0]}")
+                print(f"Line confidence is {ln_conf}")
+                print(f"Recovered Code: {code} with confidence {code_conf}")
+            # Tesseract has super high confidence so use it
+            elif (
+                ln_alternative
+                and ln_alternative[1] > TESSERACT_CODE_HI_CONFIDENCE_THRESHOLD
+            ):
+                code = ln_alternative[0]
+                code_conf = ln_alternative[1]
+                print(f"Tesseract code used {code}")
+                print(f"Tesseract line confidence is {code_conf}")
+                extraction_dict[f"tesseract_conf_{code_name}"] = ln_alternative[1]
+                extraction_dict[f"{code_name}_tesseract"] = ln_alternative[0]
+            else:  # Either textract missed, or tesseract, but not both (as we have table match), so use table
+                code = match_info[0]
+                # previous product with table score was too low in testing, going with line confidence as this is typically already low when
+                # one of both codes not found
+                code_conf = ln_conf
+                print(f"Table used for {code_name}: {code}")
+                print(f"Line confidence is {code_conf}")
+                print(f"Table match score is {match_info[1]}")
+    return code, code_conf
 
 
 def get_reg_id(response_json, file):
@@ -438,156 +626,263 @@ def get_reg_id(response_json, file):
             # Check if 20 code in line
             ln_twenty = twenty_re.findall(ln_text)
             ln_approval_alternative, ln_twenty_alternative = map(
-                lambda code: code.upper() if code else None,
+                lambda code: (code[0].upper(), code[1]) if code else None,
                 get_codes_from_tesseract(ln, file, (approval_re, twenty_re)),
             )
             # ln_twenty2 = twenty_re2.findall(ln_text)
             # If approval code found and we have not found one yet
             # How to choose cutoff? We have done limited experimentation. This is a guess that seemed to perform well in the handful of tests we did
-            if (ln_approval or ln_approval_alternative) and approval_code == "":
-                extracted_app = (
-                    ln_approval[0] if ln_approval else ln_approval_alternative
-                )
-                if ln_approval_alternative:
-                    print(f"Tesseract app code is {ln_approval_alternative}")
-                    extraction_dict["history"].append(
-                        f"Tesseract app code is {ln_approval_alternative}"
-                    )
-                else:
-                    print("No Tesseract extraction of app code")
-                if ln_approval:
-                    print(f"Textract app code is {ln_approval[0]}")
-                    extraction_dict["history"].append(
-                        f"Textract app code is {ln_approval[0]}"
-                    )
-                else:
-                    print("No Textract extraction of app code")
+            approval_code, approval_max_conf = get_reg_id_part(
+                ln_approval,
+                ln_conf,
+                ln_approval_alternative,
+                approval_code,
+                approval_max_conf,
+                "app_code",
+                extraction_dict,
+                reg_id_approved,
+            )
+            # if (ln_approval or ln_approval_alternative) and approval_code == "":
+            #     extracted_app = (
+            #         ln_approval[0] if ln_approval else ln_approval_alternative[0]
+            #     )
+            #     if ln_approval_alternative:
+            #         print(f"Tesseract app code is {ln_approval_alternative[0]}")
+            #         extraction_dict["history"].append(
+            #             f"Tesseract app code is {ln_approval_alternative[0]}"
+            #         )
+            #     else:
+            #         print("No Tesseract extraction of app code")
+            #     if ln_approval:
+            #         print(f"Textract app code is {ln_approval[0]}")
+            #         extraction_dict["history"].append(
+            #             f"Textract app code is {ln_approval[0]}"
+            #         )
+            #     else:
+            #         print("No Textract extraction of app code")
 
-                # The processor removes all non alphanumeric characters, trims whitespace, converting all characters to lower case, then does the comparison
-                match_info = extractOne(
-                    extracted_app,
-                    reg_id_approved,
-                    scorer=ratio,
-                    score_cutoff=80,
-                    processor=default_process,
-                )
-                # Check if close match to result in table
-                # search through table for best match, cutoff improves speed...if no
-                # score for entry in table lookup lower than cutoff then further processing
-                # on that entry stopped. If all items in table below cutoff then highest
-                # score among them returned
-                # If match above cutoff found then format close to table format
-                if match_info:
-                    print(f"Table app code is {match_info[0]}")
-                    ################### Tesseract Extraction and Alignment with Recovery ##########################################
-                    # print(f"extracted_app (Textract possibly Tesseract): {extracted_app},\n ln_approval_alternative (Tesseract): {ln_approval_alternative},\n match_info[0]: {match_info[0]}")
+            #     # The processor removes all non alphanumeric characters, trims whitespace, converting all characters to lower case, then does the comparison
+            #     match_info = extractOne(
+            #         extracted_app,
+            #         reg_id_approved,
+            #         scorer=ratio,
+            #         score_cutoff=80,
+            #         processor=default_process,
+            #     )
 
-                    # If both are found, then there are three codes, so get alignment and use recovered code
-                    extraction_dict["approval_table_lookup"] = match_info[0]
-                    if ln_approval_alternative and ln_approval:
-                        (
-                            approval_code,
-                            approval_max_conf,
-                        ) = recover_from_aligned_candidates(
-                            ln_conf,
-                            *get_three_alignment(
-                                extracted_app,
-                                ln_approval_alternative,
-                                match_info[0],
-                                gap_penalty=-10,
-                                half_match_score=-5,
-                            ),
-                        )
-                        extraction_dict["approval_textract"] = extracted_app
-                        extraction_dict["approval_tesseract"] = ln_approval_alternative
-                        print(
-                            "Recovered output from three sources textract/tesseract/table lookup"
-                        )
-                        print(f"Tesseract code is {ln_approval_alternative}")
-                        print(f"Textract code is {ln_approval[0]}")
-                        print(f"Table code is {match_info[0]}")
-                        print(f"Line confidence is {ln_conf}")
-                        print(
-                            f"Recovered Code: {approval_code} with confidence {approval_max_conf}"
-                        )
-                    else:  # Either textract missed, or tesseract, but not both (as we have table match), so use table
-                        approval_code = match_info[0]
-                        # previous product with table score was too low in testing, going with line confidence as this is typically already low when
-                        # one of both codes not found
-                        approval_max_conf = ln_conf
-                        print(f"Table used for app. code: {approval_code}")
-                        print(f"Line confidence is {approval_max_conf}")
-                        print(f"Table match score is {match_info[1]}")
+            #     # Check if close match to result in table
+            #     # search through table for best match, cutoff improves speed...if no
+            #     # score for entry in table lookup lower than cutoff then further processing
+            #     # on that entry stopped. If all items in table below cutoff then highest
+            #     # score among them returned
+            #     # If match above cutoff found then format close to table format
+            #     if match_info:
+            #         print(f"Table app code is {match_info[0]}")
+            #         ################### Tesseract Extraction and Alignment with Recovery ##########################################
+            #         # print(f"extracted_app (Textract possibly Tesseract): {extracted_app},\n ln_approval_alternative (Tesseract): {ln_approval_alternative},\n match_info[0]: {match_info[0]}")
+
+            #         # If both are found, then there are three codes, so get alignment and use recovered code
+            #         match_info_aligned, _ = get_two_alignment(
+            #             extracted_app, match_info[0]
+            #         )
+            #         extraction_dict["approval_table_lookup"] = match_info[0]
+            #         is_good_match = (
+            #             abs(len(extracted_app) - len(match_info[0])) < 3
+            #             and abs(
+            #                 len(match_info_aligned)
+            #                 - ((len(extracted_app) + len(match_info[0]) / 2))
+            #             )
+            #             < 2
+            #         )
+            #         two_alignment_textract_tesseract = None
+            #         if not is_good_match and (
+            #             ln_approval
+            #             and ln_approval_alternative
+            #             and abs(len(ln_approval[0]) - ln_approval_alternative[0])
+            #         ):
+            #             two_alignment_textract_tesseract, _ = get_two_alignment(
+            #                 ln_approval[0], ln_approval_alternative[0]
+            #             )
+            #         if two_alignment_textract_tesseract and (
+            #             min(len(ln_approval[0]), len(ln_approval_alternative[0])) + 1
+            #             >= len(two_alignment_textract_tesseract)
+            #             >= max(len(ln_approval[0]), len(ln_approval_alternative[0])) - 1
+            #         ):
+            #             approval_code = ln_approval[0]
+            #             approval_max_conf = ln_approval[1]
+            #             print(f"Textract code used {approval_code}")
+            #             print(f"Textract line confidence is {approval_max_conf}")
+            #         elif (
+            #             ln_approval_alternative
+            #             and ln_approval
+            #             and ln_conf > TEXTRACT_CODE_CONFIDENCE_THRESHOLD
+            #             and ln_approval_alternative[1]
+            #             > TESSERACT_CODE_CONFIDENCE_THRESHOLD
+            #         ):
+            #             (
+            #                 approval_code,
+            #                 approval_max_conf,
+            #             ) = recover_from_aligned_candidates(
+            #                 average_tesseract_textract_confidence(
+            #                     ln_approval_alternative[1], ln_conf
+            #                 ),
+            #                 *get_three_alignment(
+            #                     extracted_app,
+            #                     ln_approval_alternative[0],
+            #                     match_info[0],
+            #                     gap_penalty=-10,
+            #                     half_match_score=-5,
+            #                 ),
+            #             )
+            #             extraction_dict["textract_conf_approval"] = round(ln_conf, 2)
+            #             extraction_dict["tesseract_conf_approval"] = round(
+            #                 ln_approval_alternative[1], 2
+            #             )
+            #             extraction_dict["approval_textract"] = extracted_app
+            #             extraction_dict["approval_tesseract"] = ln_approval_alternative[
+            #                 0
+            #             ]
+            #             print(
+            #                 "Recovered output from three sources textract/tesseract/table lookup"
+            #             )
+            #             print(f"Tesseract code is {ln_approval_alternative[0]}")
+            #             print(f"Textract code is {ln_approval[0]}")
+            #             print(f"Table code is {match_info[0]}")
+            #             print(f"Line confidence is {ln_conf}")
+            #             print(
+            #                 f"Recovered Code: {approval_code} with confidence {approval_max_conf}"
+            #             )
+            #         # Tesseract has super high confidence so use it
+            #         elif (
+            #             ln_approval_alternative
+            #             and ln_approval_alternative[1]
+            #             > TESSERACT_CODE_HI_CONFIDENCE_THRESHOLD
+            #         ):
+            #             approval_code = ln_approval_alternative[0]
+            #             approval_max_conf = ln_approval_alternative[1]
+            #             print(f"Tesseract code used {approval_code}")
+            #             print(f"Tesseract line confidence is {approval_max_conf}")
+            #             extraction_dict[
+            #                 "tesseract_conf_approval"
+            #             ] = ln_approval_alternative[1]
+            #             extraction_dict["approval_tesseract"] = ln_approval_alternative[
+            #                 0
+            #             ]
+            #         else:  # Either textract missed, or tesseract, but not both (as we have table match), so use table
+            #             approval_code = match_info[0]
+            #             # previous product with table score was too low in testing, going with line confidence as this is typically already low when
+            #             # one of both codes not found
+            #             approval_max_conf = ln_conf
+            #             print(f"Table used for app. code: {approval_code}")
+            #             print(f"Line confidence is {approval_max_conf}")
+            #             print(f"Table match score is {match_info[1]}")
 
             # It is possible for both approval code and 20 digit code to be on same line, that
             # is why we don't use if else. Check if regex matches and that we have not found one yet.
-            if (ln_twenty or ln_twenty_alternative) and twenty_code == "":
-                # Get first match
-                extracted_20 = ln_twenty[0] if ln_twenty else ln_twenty_alternative
-                # if ln_twenty2:
-                #    extracted_20 = ln_twenty2[0]
+            twenty_code, twenty_max_conf = get_reg_id_part(
+                ln_twenty,
+                ln_conf,
+                ln_twenty_alternative,
+                twenty_code,
+                twenty_max_conf,
+                "twenty_code",
+                extraction_dict,
+                twenty_digit_codes,
+            )
+            # if (ln_twenty or ln_twenty_alternative) and twenty_code == "":
+            #     # Get first match
+            #     extracted_20 = ln_twenty[0] if ln_twenty else ln_twenty_alternative[0]
+            #     # if ln_twenty2:
+            #     #    extracted_20 = ln_twenty2[0]
 
-                if ln_twenty_alternative:
-                    print(f"Tesseract twenty code is {ln_twenty_alternative}")
-                    extraction_dict["history"].append(
-                        f"Tesseract twenty code is {ln_twenty_alternative}"
-                    )
-                else:
-                    print("No Tesseract extraction of twenty code")
-                if ln_twenty:
-                    print(f"Textract twenty code is {ln_twenty[0]}")
-                    extraction_dict["history"].append(
-                        f"Textract twenty code is {ln_twenty[0]}"
-                    )
-                else:
-                    print("No Textract extraction of twenty code")
+            #     if ln_twenty_alternative:
+            #         print(f"Tesseract twenty code is {ln_twenty_alternative[0]}")
+            #         extraction_dict["history"].append(
+            #             f"Tesseract twenty code is {ln_twenty_alternative[0]}"
+            #         )
+            #     else:
+            #         print("No Tesseract extraction of twenty code")
+            #     if ln_twenty:
+            #         print(f"Textract twenty code is {ln_twenty[0]}")
+            #         extraction_dict["history"].append(
+            #             f"Textract twenty code is {ln_twenty[0]}"
+            #         )
+            #     else:
+            #         print("No Textract extraction of twenty code")
 
-                match_info = extractOne(
-                    extracted_20,
-                    twenty_digit_codes,
-                    scorer=ratio,
-                    score_cutoff=80,
-                    processor=default_process,
-                )
-                if match_info:
-                    print(f"Table app code is {match_info[0]}")
-                    ################### Tesseract Extraction and Alignment with Recovery ##########################################
-                    # print(f"extracted_app (Textract possibly Tesseract): {extracted_20},\n ln_approval_alternative (Tesseract): {ln_twenty_alternative},\n match_info[0]: {match_info[0]}")
-                    # If both Tesseract and Textract extraction available, use Table as third code and recover code from the three
-                    extraction_dict["twenty_table_lookup"] = match_info[0]
-                    if ln_twenty_alternative and ln_twenty:
-                        (
-                            twenty_code,
-                            twenty_max_conf,
-                        ) = recover_from_aligned_candidates(
-                            ln_conf,
-                            *get_three_alignment(
-                                ln_twenty_alternative,
-                                extracted_20,
-                                match_info[0],
-                                gap_penalty=-10,
-                                half_match_score=-5,
-                            ),
-                        )
-                        extraction_dict["twenty_textract"] = extracted_20
-                        extraction_dict["twenty_tesseract"] = ln_twenty_alternative
-                        print(
-                            "Recovered output from three sources textract/tesseract/table lookup"
-                        )
-                        print(f"Tesseract code is {ln_twenty_alternative}")
-                        print(f"Textract code is {ln_twenty[0]}")
-                        print(f"Table code is {match_info[0]}")
-                        print(f"Line confidence is {ln_conf}")
-                        print(
-                            f"Recovered Code: {twenty_code} with confidence {twenty_max_conf}"
-                        )
-                    else:
-                        # Either textract missed, or tesseract, but not both (as we have table match), so use table
-                        twenty_code = match_info[0]
-                        twenty_max_conf = ln_conf
-                        print(f"Table used for twenty code: {twenty_code}")
-                        print(f"Line confidence is {twenty_max_conf}")
-                        print(f"Table match score is {match_info[1]}")
+            #     match_info = extractOne(
+            #         extracted_20,
+            #         twenty_digit_codes,
+            #         scorer=ratio,
+            #         score_cutoff=80,
+            #         processor=default_process,
+            #     )
+            #     if match_info:
+            #         print(f"Table app code is {match_info[0]}")
+            #         ################### Tesseract Extraction and Alignment with Recovery ##########################################
+            #         # print(f"extracted_app (Textract possibly Tesseract): {extracted_20},\n ln_approval_alternative (Tesseract): {ln_twenty_alternative},\n match_info[0]: {match_info[0]}")
+            #         # If both Tesseract and Textract extraction available, use Table as third code and recover code from the three
+            #         extraction_dict["twenty_table_lookup"] = match_info[0]
+            #         if (
+            #             ln_twenty_alternative
+            #             and ln_twenty
+            #             and ln_conf > TEXTRACT_CODE_CONFIDENCE_THRESHOLD
+            #             and ln_twenty_alternative[1]
+            #             > TESSERACT_CODE_CONFIDENCE_THRESHOLD
+            #         ):
+            #             (
+            #                 twenty_code,
+            #                 twenty_max_conf,
+            #             ) = recover_from_aligned_candidates(
+            #                 average_tesseract_textract_confidence(
+            #                     ln_twenty_alternative[1], ln_conf
+            #                 ),
+            #                 *get_three_alignment(
+            #                     ln_twenty_alternative[0],
+            #                     extracted_20,
+            #                     match_info[0],
+            #                     gap_penalty=-10,
+            #                     half_match_score=-5,
+            #                 ),
+            #             )
+            #             extraction_dict["textract_conf_twenty"] = round(ln_conf, 2)
+            #             extraction_dict["tesseract_conf_twenty"] = round(
+            #                 ln_twenty_alternative[1], 2
+            #             )
+            #             extraction_dict["twenty_textract"] = extracted_20
+            #             extraction_dict["twenty_tesseract"] = ln_twenty_alternative[0]
+            #             print(
+            #                 "Recovered output from three sources textract/tesseract/table lookup"
+            #             )
+            #             print(f"Tesseract code is {ln_twenty_alternative[0]}")
+            #             print(f"Textract code is {ln_twenty[0]}")
+            #             print(f"Table code is {match_info[0]}")
+            #             print(f"Line confidence is {ln_conf}")
+            #             print(
+            #                 f"Recovered Code: {twenty_code} with confidence {twenty_max_conf}"
+            #             )
+            #         # Tesseract has super high confidence so use it
+            #         elif (
+            #             ln_twenty_alternative
+            #             and ln_twenty_alternative[1]
+            #             > TESSERACT_CODE_HI_CONFIDENCE_THRESHOLD
+            #         ):
+            #             twenty_code = ln_twenty_alternative[0]
+            #             twenty_max_conf = ln_twenty_alternative[1]
+            #             print(f"Tesseract code used {twenty_code}")
+            #             print(f"Tesseract line confidence is {twenty_max_conf}")
+            #             extraction_dict[
+            #                 "tesseract_conf_twenty"
+            #             ] = ln_twenty_alternative[1]
+            #             extraction_dict["twenty_tesseract"] = ln_twenty_alternative[0]
+            #         else:
+            #             # Either textract missed, or tesseract, but not both (as we have table match), and
+            #             # tesseract doesn't very super high confidence, so use table
+            #             twenty_code = match_info[0]
+            #             twenty_max_conf = ln_conf
+            #             print(f"Table used for twenty code: {twenty_code}")
+            #             print(f"Line confidence is {twenty_max_conf}")
+            #             print(f"Table match score is {match_info[1]}")
 
     # Take min of the two conf. levels as the confidence overall that way
     # code only above cutoff if both parts are above cutoff
@@ -598,7 +893,18 @@ def get_reg_id(response_json, file):
 
     reg_id_match = " ".join((approval_code, twenty_code))
 
+    reg_id_match = delimit_known_words_by_spaces(reg_id_match)
     return reg_id_match, confidence_reg_id, extraction_dict
+
+
+known_words = {"INTERNAL", "APPROVED", "ACCEPTED"}
+def delimit_known_words_by_spaces(string):
+    for known_word in known_words:
+        start_index_of_known_word = string.find(known_word)
+        if start_index_of_known_word > 0:
+            if string[start_index_of_known_word - 1] != " ":
+                string = f"{string[:start_index_of_known_word]} {string[start_index_of_known_word:]}"
+    return string
 
 
 def detect_text(bucket, key):
@@ -917,6 +1223,12 @@ centene_format = {
 
 # --------------- Main handler ------------------
 def lambda_handler(event, context):
+    for filename in os.listdir("tmp"):
+        # if filename.endswith('.tif'):  # Check if the file ends with ".tif"
+        file_path = os.path.join("tmp", filename)  # Get the full file path
+        os.remove(file_path)  # Remove the file
+        print(f"Removed file: {filename}")
+
     global extraction_log_df
     """Demonstrates S3 trigger that uses
     textract APIs to detect text, query text in S3 Object.
@@ -1767,7 +2079,12 @@ def get_event(tif_key):
 
 
 tif_keys_list = sorted(
-    [f"real-doc/{file_name}" for file_name in os.listdir("./sampled_docs")]
+    [
+        f"real-doc/{file_name}"
+        for file_name in os.listdir(
+            "./problematic_samples/CUR6470-01_3868_06152023_0001151464"
+        )
+    ]
 )
 
 
@@ -1782,15 +2099,19 @@ output_suffix = "centenetransfer Centenetesting"
 extraction_log_df = pd.DataFrame()
 
 dummy_extration_dict = {}
+dummy_extration_dict["textract_conf_approval"] = None
+dummy_extration_dict["textract_conf_twenty"] = None
+dummy_extration_dict["tesseract_conf_approval"] = None
+dummy_extration_dict["tesseract_conf_twenty"] = None
 dummy_extration_dict["doc"] = None
 dummy_extration_dict["RegId"] = None
 dummy_extration_dict["RegIdConf"] = None
-dummy_extration_dict["approval_textract"] = None
-dummy_extration_dict["approval_tesseract"] = None
-dummy_extration_dict["approval_table_lookup"] = None
-dummy_extration_dict["twenty_textract"] = None
-dummy_extration_dict["twenty_tesseract"] = None
-dummy_extration_dict["twenty_table_lookup"] = None
+dummy_extration_dict["app_code_textract"] = None
+dummy_extration_dict["app_code_tesseract"] = None
+dummy_extration_dict["app_code_table_lookup"] = None
+dummy_extration_dict["twenty_code_textract"] = None
+dummy_extration_dict["twenty_code_tesseract"] = None
+dummy_extration_dict["twenty_code_table_lookup"] = None
 dummy_extration_dict["history"] = None
 
 extraction_log_df = pd.concat(
@@ -1799,7 +2120,7 @@ extraction_log_df = pd.concat(
 )
 
 if __name__ == "__main__":
-    for event in events[:50]:
+    for event in events:
         lambda_handler(event, None)
     extraction_log_df.to_csv(f"outputs/extraction_log_{output_suffix}.csv")
 #     for i in range(0, 1):

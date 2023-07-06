@@ -9,9 +9,6 @@ approval_codes = json.loads(codes)
 
 approval_codes.sort()
 
-for approval_code in approval_codes:
-    if approval_code[-5] != '_':
-        print('HHHHHHHHHHFFFFF')
 
 # for i, approval_code in enumerate(approval_codes):
 #     if approval_code[:6] == 'Y0020 ':
@@ -19,5 +16,5 @@ for approval_code in approval_codes:
 
 
 
-# with open('docs/twenty_codes-sorted.json', 'w') as f:
-#     f.write(json.dumps(approval_codes))
+with open('docs/twenty_codes-sorted2.json', 'w') as f:
+    f.write(json.dumps(approval_codes))
