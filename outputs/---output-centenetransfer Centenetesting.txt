@@ -1,0 +1,21 @@
+
+*******real-doc/C001890862.tiff***********************C001890862-0-bottom0.tif****
+PRO_26865E INTERNAL APPROVED 12142018 NA8PROLTR26865E_0000 .....with confidence 77.00001100000001
+*******real-doc/C001890869.tiff***********************C001890869-0-bottom0.tif****
+PRO_02430E INTERNAL APPROVED 07052017 NJ7PROLTR02430E_0000 .....with confidence 74.50980392156863
+*******real-doc/C001890888.tiff***********************C001890888-0-bottom0.tif****
+PRO_13720E INTERNAL APPROVED 04202018 NA8PROLTR13720E_0000 .....with confidence 96.49201965332031
+*******real-doc/C001890890.tiff***********************C001890890-0-bottom0.tif****
+PRO_26865E INTERNAL APPROVED 12142018 NA8PROLTR26865E_0000 .....with confidence 92.13070678710938
+*******real-doc/C001890906.tiff***********************C001890906-0-bottom0.tif****
+NA018175_PRO_LTR_ENG  .....with confidence 46.58064002990723
+*******real-doc/C001890914.tiff***********************C001890914-0-bottom0.tif****
+NA018175_PRO_LTR_ENG  .....with confidence 47.44580345153808
+*******real-doc/C001890915.tiff***********************C001890915-0-bottom0.tif****
+Y0020_WCM_86723E_C INTERNAL APPROVED 09222021 NA1WCMLTR86723E_0000 .....with confidence 96.21794871794872
+*******real-doc/C001890916.tiff***********************C001890916-0-bottom0.tif****
+PRO_02433E INTERNAL APPROVED 07212017 KY7KMDLTR03346E_0717 .....with confidence 85.0
+*******real-doc/C001890932.tiff***********************C001890932-0-bottom0.tif****
+Y0020_WCM_86723E_C INTERNAL APPROVED 09222021 NA1WCMLTR86723E_0000 .....with confidence 95.75126647949219
+*******real-doc/C001890933.tiff***********************C001890933-0-bottom1.tif****
+Y0020_WCM_120422E_C INTERNAL APPROVED 04032023 NA3WCMLTR22064E_0000 .....with confidence 98.6758553199768

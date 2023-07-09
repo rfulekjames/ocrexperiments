@@ -1,3 +1,7 @@
+from PIL import Image as pillow_image
+import pytesseract
+
+
 import boto3
 from decimal import Decimal
 import json
@@ -11,32 +15,22 @@ from rapidfuzz.fuzz import ratio, WRatio
 from rapidfuzz.utils import default_process
 import subprocess
 import os
-from PIL import Image as pillow_image
-import pytesseract
-from itertools import product
-from collections import deque
-import pandas as pd
 
 
-print("Loading function")
+print('Loading function')
 
-test_bucket_name = "centene-test"
-output_bucket_name = "centene-test-out"
-
-session = boto3.Session(profile_name="default")
-textract = boto3.client("textract")
-s3 = boto3.resource("s3")
-client = s3.meta.client  # used for interacting with client for convenience
+s3 = boto3.resource('s3')
+textract = boto3.client('textract')
+client = s3.meta.client #used for interacting with client for convenience
 
 region = boto3.session.Session().region_name
 
-# a2i=boto3.client('sagemaker-a2i-runtime', region_name=region)
+a2i=boto3.client('sagemaker-a2i-runtime', region_name=region)
 
-# Must be different from trigger bucket
-# Lambda IAM role only has write permission to this bucket
-tables_bucket = test_bucket_name
-output_bucket = output_bucket_name
-data_bucket = test_bucket_name
+#Must be different from trigger bucket
+#Lambda IAM role only has write permission to this bucket
+tables_bucket = 'centene-realtimetest-dev-output'
+output_bucket = 'textract-centene-dev-output'
 
 
 approval_re = re.compile(
@@ -49,251 +43,226 @@ twenty_re = re.compile(
 )
 
 
-# os.environ["BUCKET"] = data_bucket
-# os.environ["REGION"] = region
-# role = sm.get_execution_role()
+#os.environ["BUCKET"] = data_bucket
+#os.environ["REGION"] = region
+#role = sm.get_execution_role()
 
-# ----------------Load regID table values-----------------------
-response = client.get_object(Bucket=tables_bucket, Key="twenty_codes.json")
-content = response["Body"].read().decode("utf-8")
+#----------------Load regID table values-----------------------
+response = client.get_object(Bucket=tables_bucket, Key='twenty_codes.json')
+content = response['Body'].read().decode('utf-8')
 twenty_digit_codes = json.loads(content)
-twenty_digit_codes.sort(key=lambda x: x[-4:])  # order by year descending
+twenty_digit_codes.sort(key=lambda x : x[-4:])#order by year descending
 
-response = client.get_object(Bucket=tables_bucket, Key="approval_codes_corrected.json")
-content = response["Body"].read().decode("utf-8")
+response = client.get_object(Bucket=tables_bucket, Key='approval_codes.json')
+content = response['Body'].read().decode('utf-8')
 reg_id_approved = json.loads(content)
 reg_id_approved
-# -----------------Ouput, Queries and Rules ---------------
+#-----------------Ouput, Queries and Rules ---------------
 # JSON structure to hold the extraction result
 
 
-queries = [
-    {"Text": "Who is the person?", "Alias": "ADDRESSEE"},
-    {"Text": "What is the street address of the person?", "Alias": "STREET_ADDRESS"},
-    {"Text": "What is the city of the person?", "Alias": "CITY"},
-    {"Text": "What is the state of the person?", "Alias": "STATE"},
-    {"Text": "What is the zip code of the person?", "Alias": "ZIP_CODE_4"},
+queries = [ 
+    {
+        'Text':'Who is the person?',
+        'Alias': 'ADDRESSEE'
+    },
+    {
+        'Text': 'What is the street address of the person?',
+        'Alias': 'STREET_ADDRESS'
+    },
+    {
+        'Text': 'What is the city of the person?',
+        'Alias': 'CITY'
+    },
+    {
+        'Text': 'What is the state of the person?',
+        'Alias': 'STATE'
+    },
+    {
+        'Text': 'What is the zip code of the person?',
+        'Alias': 'ZIP_CODE_4'
+    }
 ]
-# confidence_threshold = 101 #For manual verification of all docs
-confidence_threshold = 97  # cutoff for automatic verification
+#confidence_threshold = 101 #For manual verification of all docs
+confidence_threshold = 95 #cutoff for automatic verification
 rules = [
     {
-        "description": f"ADDRESSEE confidence score should be greater than or equal to {confidence_threshold}",
-        "field_name": "ADDRESSEE",
-        "field_name_regex": None,  # support Regex: '_confidence$',
-        "condition_category": "Confidence",
-        "condition_type": "ConfidenceThreshold",
-        "condition_setting": confidence_threshold,
+        'description': f'ADDRESSEE confidence score should be greater than or equal to {confidence_threshold}',
+        'field_name': 'ADDRESSEE',
+        'field_name_regex': None, # support Regex: '_confidence$',
+        'condition_category': 'Confidence',
+        'condition_type': 'ConfidenceThreshold',
+        'condition_setting': confidence_threshold,
     },
     {
-        "description": f"ADDRESS_LINE_1 confidence score should be greater than or equal to {confidence_threshold}",
-        "field_name": "ADDRESS_LINE_1",
-        "field_name_regex": None,  # support Regex: '_confidence$',
-        "condition_category": "Confidence",
-        "condition_type": "ConfidenceThreshold",
-        "condition_setting": confidence_threshold,
+        'description': f'ADDRESS_LINE_1 confidence score should be greater than or equal to {confidence_threshold}',
+        'field_name': 'ADDRESS_LINE_1',
+        'field_name_regex': None, # support Regex: '_confidence$',
+        'condition_category': 'Confidence',
+        'condition_type': 'ConfidenceThreshold',
+        'condition_setting': confidence_threshold,
     },
     {
-        "description": f"ADDRESS_LINE_2 confidence score should be greater than or equal to {confidence_threshold}",
-        "field_name": "ADDRESS_LINE_2",
-        "field_name_regex": None,  # support Regex: '_confidence$',
-        "condition_category": "Confidence",
-        "condition_type": "ConfidenceThreshold",
-        "condition_setting": confidence_threshold,
+        'description': f'ADDRESS_LINE_2 confidence score should be greater than or equal to {confidence_threshold}',
+        'field_name': 'ADDRESS_LINE_2',
+        'field_name_regex': None, # support Regex: '_confidence$',
+        'condition_category': 'Confidence',
+        'condition_type': 'ConfidenceThreshold',
+        'condition_setting': confidence_threshold,
     },
     {
-        "description": f"CITY confidence score should be greater than or equal to {confidence_threshold}",
-        "field_name": "CITY",
-        "field_name_regex": None,  # support Regex: '_confidence$',
-        "condition_category": "Confidence",
-        "condition_type": "ConfidenceThreshold",
-        "condition_setting": confidence_threshold,
+        'description': f'CITY confidence score should be greater than or equal to {confidence_threshold}',
+        'field_name': 'CITY',
+        'field_name_regex': None, # support Regex: '_confidence$',
+        'condition_category': 'Confidence',
+        'condition_type': 'ConfidenceThreshold',
+        'condition_setting': confidence_threshold,
     },
     {
-        "description": f"STATE confidence score should be greater than or equal to {confidence_threshold}",
-        "field_name": "STATE",
-        "field_name_regex": None,  # support Regex: '_confidence$',
-        "condition_category": "Confidence",
-        "condition_type": "ConfidenceThreshold",
-        "condition_setting": confidence_threshold,
+        'description': f'STATE confidence score should be greater than or equal to {confidence_threshold}',
+        'field_name': 'STATE',
+        'field_name_regex': None, # support Regex: '_confidence$',
+        'condition_category': 'Confidence',
+        'condition_type': 'ConfidenceThreshold',
+        'condition_setting': confidence_threshold,
     },
     {
-        "description": f"ZIP_CODE_4 confidence score should be greater than or equal to {confidence_threshold}",
-        "field_name": "ZIP_CODE_4",
-        "field_name_regex": None,  # support Regex: '_confidence$',
-        "condition_category": "Confidence",
-        "condition_type": "ConfidenceThreshold",
-        "condition_setting": confidence_threshold,
+        'description': f'ZIP_CODE_4 confidence score should be greater than or equal to {confidence_threshold}',
+        'field_name': 'ZIP_CODE_4',
+        'field_name_regex': None, # support Regex: '_confidence$',
+        'condition_category': 'Confidence',
+        'condition_type': 'ConfidenceThreshold',
+        'condition_setting': confidence_threshold,
     },
     {
-        "description": f"REGULATORY_APPROVAL_ID confidence score should be greater than or equal to {confidence_threshold}",
-        "field_name": "REGULATORY_APPROVAL_ID",
-        "field_name_regex": None,  # support Regex: '_confidence$',
-        "condition_category": "Confidence",
-        "condition_type": "ConfidenceThreshold",
-        "condition_setting": confidence_threshold,
-    },
-]
-
-
-# ----------------Image processing -----------------------------------------
+        'description': f'REGULATORY_APPROVAL_ID confidence score should be greater than or equal to {confidence_threshold}',
+        'field_name': 'REGULATORY_APPROVAL_ID',
+        'field_name_regex': None, # support Regex: '_confidence$',
+        'condition_category': 'Confidence',
+        'condition_type': 'ConfidenceThreshold',
+        'condition_setting': confidence_threshold,
+    }
+    ]
+#----------------Image processing -----------------------------------------
 def split_tif(filepath):
     print(filepath)
-    command_version = ["convert", "-version"]
+    command_version = ['convert', '-version']
     subprocess.run(command_version)
 
-    last_dot_index = get_last_dot_index(filepath)
-    # command = ["convert", filepath, filepath[:last_dot_index] + "-%02d.tif"]
-    command2 = [
-        "convert",
-        filepath,
-        "-crop",
-        "100%x100%",
-        "+repage",
-        "-write",
-        filepath[:last_dot_index] + "-%02d.tif",
-        "null:",
-    ]
-
+    command = ['convert', filepath, filepath[:-4]+ '-%02d.tif']
+    command2 = ['convert', filepath, '-crop', '100%x100%', '+repage', '-write', filepath[:-4]+'-%02d.tif', 'null:']
+    
     try:
         subprocess.run(command2, check=True)
-        print("Image splitting completed successfully.")
+        #print("Image splitting completed successfully.")
     except subprocess.CalledProcessError as e:
         print(f"Image extraction failed: {e}")
-
+        
     # list the TIFF individual pages
     page_files = []
 
     # Get a list of the generated page files
-    for file in os.listdir("tmp"):
-        if file.endswith(".tif"):
-            page_files.append("tmp/" + file)
-    print(page_files)
+    for file in os.listdir('/tmp'):
+        if file.endswith('.tif'):
+            page_files.append('/tmp/' +file)
+    #print(page_files)        
     # Combine the individual pages into a single PNG file
-    cilt_name = "tmp/cilt.png"
-    combine_command = ["convert"] + page_files + ["-append", cilt_name]
-    try:
+    cilt_name = '/tmp/cilt.png'
+    combine_command = ['convert'] + page_files + ['-append',cilt_name]
+    try:       
         # Execute the command to combine the pages into a PNG file
         subprocess.run(combine_command, check=True)
-        print("Image CILT combining completed successfully.")
+        #print("Image CILT combining completed successfully.")
     except subprocess.CalledProcessError as e:
         print(f"Image CILT combining failed: {e}")
 
-
-def get_last_dot_index(filepath):
-    last_dot_index = filepath[::-1].find(".")
-    return -last_dot_index - 1 if last_dot_index != -1 else 0
-
-
 def extract_bottom(input_path, output_path):
-    command = [
-        "convert",
-        input_path,
-        "-gravity",
-        "south",
-        "-crop",
-        "100%x15%",
-        output_path,
-    ]
-
+    command = ['convert', input_path, '-gravity', 'south', '-crop', '100%x15%', output_path]
+    
     try:
         subprocess.run(command, check=True)
-        print("Bottom extraction completed successfully.")
+        #print("Bottom extraction completed successfully.")
     except subprocess.CalledProcessError as e:
         print(f"Image extraction failed: {e}")
 
-
 def extract_top(input_path, output_path):
-    command = [
-        "convert",
-        input_path,
-        "-gravity",
-        "north",
-        "-crop",
-        "100%x85%",
-        output_path,
-    ]
+    command = ['convert', input_path, '-gravity', 'north', '-crop', '100%x85%', output_path]
     try:
         subprocess.run(command, check=True)
         print("Top extraction completed successfully.")
     except subprocess.CalledProcessError as e:
         print(f"Image extraction failed: {e}")
-
-
+        
 def split_into_pages_top_and_bottom(filepath):
-    # given the filepath of the original multipage .TIF file
+    #given the filepath of the original multipage .TIF file
     # we split it into pages and for each page, further split
-    # into top and bottom.
+    #into top and bottom.
     split_tif(filepath)
-    # iterate over pages
-    files = os.listdir("tmp")
+    #iterate over pages
+    files = os.listdir('/tmp')
     for file in files:
-        if "-" and ".tif" in file:
-            last_dot_index = get_last_dot_index(filepath)
-            print("Splitting the following page into the two files below:")
-            bottom_filename = (
-                f"tmp/{file[:last_dot_index]}-bottom{file[last_dot_index:]}"
-            )
-            print(bottom_filename)
-            top_filename = f"tmp/{file[:last_dot_index]}-top{file[last_dot_index:]}"
-            print(top_filename)
-            extract_bottom("tmp/" + file, bottom_filename)
-            extract_top("tmp/" + file, top_filename)
-
-
+        if '-' and '.tif' in file:
+            #print("Splitting the following page into the two files below:")
+            bottom_filename = '/tmp/'+ file[:-4] + '-bottom.tif'
+            #print(bottom_filename)
+            top_filename = '/tmp/' + file[:-4] + '-top.tif'
+            #print(top_filename)
+            extract_bottom('/tmp/'+file, bottom_filename)
+            extract_top('/tmp/'+file, top_filename)
+            
 def add_border(filepath):
+    
     input_file = filepath
-    output_file = filepath[: get_last_dot_index(filepath)] + "-border.png"
+    output_file = filepath[:-4]+'-border.png'
 
-    command = [
-        "convert",
-        input_file,
-        "-bordercolor",
-        "lime",
-        "-border",
-        "5x5",
-        output_file,
-    ]
+    command = ['convert',input_file,'-bordercolor', 'lime','-border', '5x5', output_file]
     try:
         subprocess.run(command, check=True)
-        print("Border addition completed successfully.")
+        #print("Border addition completed successfully.")
     except subprocess.CalledProcessError as e:
         print(f"Image extraction failed: {e}")
-
 
 def recombine(top_path, bottom_path):
-    # add border to both top and bottom image
+    #add border to both top and bottom image
     add_border(top_path)
     add_border(bottom_path)
-
-    # append bottom to top and compress as png
-    command = [
-        "convert",
-        top_path[: get_last_dot_index(top_path)] + "-border.png",
-        bottom_path[: get_last_dot_index(bottom_path)] + "-border.png",
-        "-append",
-        "-define",
-        "png:compression-filter=5",
-        "-define",
-        "png:compression-level=9",
-        "-define",
-        "png:compression-strategy=1",
-        "tmp/image-for-A2I.png",
-    ]
+    
+    #append bottom to top and compress as png
+    command = ['convert',
+               top_path[:-4]+'-border.png',
+               bottom_path[:-4]+'-border.png',
+               '-append',
+               '-define',
+               'png:compression-filter=5',
+               '-define',
+               'png:compression-level=9',
+               '-define',
+               'png:compression-strategy=1',
+               '/tmp/image-for-A2I.png'
+              ]
     try:
         subprocess.run(command, check=True)
-        print("Image append completed successfully.")
+        #print("Image append completed successfully.")
     except subprocess.CalledProcessError as e:
         print(f"Image extraction failed: {e}")
+    
+    os.remove(top_path[:-4]+'-border.png')  # Remove the intermediate files
+    os.remove(bottom_path[:-4]+'-border.png')            
+    
+# --------------REG ID EXTRACTION ------------------
 
-    os.remove(
-        top_path[: get_last_dot_index(top_path)] + "-border.png"
-    )  # Remove the intermediate files
-    os.remove(bottom_path[: get_last_dot_index(bottom_path)] + "-border.png")
+TESSERACT_CONF_MULTIPLICATION_FACTOR = 1.1
+TESSERACT_CODE_HI_CONFIDENCE_THRESHOLD = 100
+TESSERACT_CODE_CONFIDENCE_THRESHOLD = 70
 
+TEXTRACT_CODE_HI_CONFIDENCE_THRESHOLD = 93
+TEXTRACT_CODE_CONFIDENCE_THRESHOLD = 70
 
-# --------------- Helper Functions to call textract APIs ------------------
-# copy
+DEFAULT_EXTRACTION_CUTOFF = 87
+LOW_EXTRACTION_CUTOFF = 69
+
+EXTRACTION_PREFIX = "******"
+
 
 
 def multistage_extraction(get_text_function_list, reg_expressions):
@@ -392,6 +361,11 @@ def get_tesseract_text_from_data_with_confidence(data):
             words.append(word_text)
     average_confidence = confidence / total_chars if total_chars else 0
     return " ".join(words), average_confidence
+    
+    
+def get_last_dot_index(filepath):
+    last_dot_index = filepath[::-1].find(".")
+    return -last_dot_index - 1 if last_dot_index != -1 else 0
 
 
 def get_codes_from_tesseract(ln, file, reg_expressions):
@@ -406,7 +380,7 @@ def get_codes_from_tesseract(ln, file, reg_expressions):
     """
     def get_error_output():
         return [None]*len(reg_expressions) if reg_expressions else [None]
-    file_in_folder = f"tmp/{file}"
+    file_in_folder = f"/tmp/{file}"
     last_dot_index = get_last_dot_index(file_in_folder)
     file_in_folder_morphed = (
         f"{file_in_folder[:last_dot_index]}-morphed{file_in_folder[last_dot_index:]}"
@@ -510,19 +484,6 @@ def average_tesseract_textract_confidence(tesseract_conf, textract_conf):
     return (tesseract_conf + textract_conf) / 2
 
 
-TESSERACT_CONF_MULTIPLICATION_FACTOR = 1.1
-TESSERACT_CODE_HI_CONFIDENCE_THRESHOLD = 100
-TESSERACT_CODE_CONFIDENCE_THRESHOLD = 70
-
-TEXTRACT_CODE_HI_CONFIDENCE_THRESHOLD = 93
-TEXTRACT_CODE_CONFIDENCE_THRESHOLD = 70
-
-DEFAULT_EXTRACTION_CUTOFF = 87
-LOW_EXTRACTION_CUTOFF = 69
-
-EXTRACTION_PREFIX = "******"
-
-
 def get_reg_id_part(
     ln_first,
     ln_conf,
@@ -530,23 +491,22 @@ def get_reg_id_part(
     code,
     code_conf,
     code_name,
-    extraction_dict,
     table,
     extractOne_cutoff=DEFAULT_EXTRACTION_CUTOFF,
 ):
+    """ 
+    Returns extracted app_code or twenty_code.
+    Steps 1. and 3. here: https://www.notion.so/Reg_Id-extraction-logic-eea5f0bd597b4970ac257af38fcaea13
+    """
     if (ln_first or ln_alternative) and code == "":
         # it seems plausible (by multiple observation) that 0 confidence of tesseract
         # is in fact usually quite correct
         if ln_alternative:
             print(f"Tesseract {code_name} is {ln_alternative[0]}")
-            extraction_dict["history"].append(
-                f"Tesseract {code_name} is {ln_alternative[0]}"
-            )
         else:
             print(f"No Tesseract extraction of {code_name}")
         if ln_first:
             print(f"Textract {code_name} is {ln_first[0]}")
-            extraction_dict["history"].append(f"Textract {code_name} is {ln_first[0]}")
         else:
             print(f"No Textract extraction of {code_name}")
 
@@ -571,8 +531,8 @@ def get_reg_id_part(
                 processor=default_process,
             )
 
-        # fallback part (last resort)
         if extractOne_cutoff < DEFAULT_EXTRACTION_CUTOFF:
+            # fallback part (Step 3.)
             # if both table lookup matches agree return the table result
             if (
                 first_match_info
@@ -585,10 +545,6 @@ def get_reg_id_part(
                     f"{EXTRACTION_PREFIX} Table used for {code_name}: {code} (both matches agreed)"
                 )
                 print(f"Average table lookup score is {round(code_conf, 2)}")
-                extraction_dict[code_name] = code
-                extraction_dict[
-                    f'{code_name.replace("_fallback", "")}_type'
-                ] = "fallback-1"
             elif first_match_info or alternative_match_info:
                 code = (
                     first_match_info[0]
@@ -604,8 +560,6 @@ def get_reg_id_part(
                     f"{EXTRACTION_PREFIX} Table used for {code_name}: {code} (one match agreed)"
                 )
                 print(f"Table match score is {code_conf}")
-                extraction_dict[code_name] = code
-                extraction_dict[f"{code_name.replace('_fallback', '')}_type"] = "fallback-2"
             return code, code_conf
 
         # pick table lookup match_info to be either first_match_info or alternative_match_info based on the similarity score
@@ -649,17 +603,16 @@ def get_reg_id_part(
             print(f"Table {code_name} is {match_info[0]} with score {match_info[1]}")
             ################### Tesseract Extraction and Alignment with Recovery ##########################################
             # print(f"extracted_code (Textract possibly Tesseract): {extracted_code},\n ln_alternative (Tesseract): {ln_alternative},\n match_info[0]: {match_info[0]}")
-            extraction_dict[f"{code_name}_table_lookup"] = match_info[0]
             extracted_info_without_spaces = extracted_code.replace(" ", "")
             match_without_spaces = match_info[0].replace(" ", "")
             # If table match and code differ only in spaces return table code.
             if match_without_spaces == extracted_info_without_spaces:
+                # Step 1.a)
                 code = match_info[0]
                 code_conf = conf
                 print(f"{EXTRACTION_PREFIX} Table used for {code_name}: {code}")
                 print(f"Line confidence is {code_conf}")
                 print(f"Table match score is {match_info[1]}")
-                extraction_dict[f"{code_name}_type"] = "100-match-mod-spaces"
                 return code, code_conf
 
             # is extracted string very close to the table lookup string?
@@ -682,19 +635,18 @@ def get_reg_id_part(
                     ln_alternative[0],
                 )
             ):
+                # Step 1.b)
                 code = ln_first[0]
                 code_conf = ln_conf
                 print(f"{EXTRACTION_PREFIX} Textract {code_name} used {code}")
                 print(f"Textract line confidence is {code_conf}")
-                extraction_dict[f"textract_conf_{code_name}"] = round(ln_conf, 2)
-                extraction_dict[f"{code_name}_textract"] = extracted_code
-                extraction_dict[f"{code_name}_type"] = "hi-textract"
             elif (
                 ln_alternative
                 and ln_first
                 and ln_conf > TEXTRACT_CODE_CONFIDENCE_THRESHOLD
                 and ln_alternative[1] > TESSERACT_CODE_CONFIDENCE_THRESHOLD
             ):
+                # Step 1.c)
                 (
                     code,
                     code_conf,
@@ -708,13 +660,6 @@ def get_reg_id_part(
                         half_match_score=-5,
                     ),
                 )
-                extraction_dict[f"textract_conf_{code_name}"] = round(ln_conf, 2)
-                extraction_dict[f"tesseract_conf_{code_name}"] = round(
-                    ln_alternative[1], 2
-                )
-                extraction_dict[f"{code_name}_textract"] = extracted_code
-                extraction_dict[f"{code_name}_tesseract"] = ln_alternative[0]
-                extraction_dict[f"{code_name}_type"] = "recovery"
                 print(
                     "Recovered output from three sources textract/tesseract/table lookup"
                 )
@@ -730,14 +675,13 @@ def get_reg_id_part(
                 ln_alternative
                 and ln_alternative[1] > TESSERACT_CODE_HI_CONFIDENCE_THRESHOLD
             ):
+                # Step 1.d)
                 code = ln_alternative[0]
                 code_conf = ln_alternative[1]
                 print(f"{EXTRACTION_PREFIX} Tesseract {code_name} used {code}")
                 print(f"Tesseract line confidence is {code_conf}")
-                extraction_dict[f"tesseract_conf_{code_name}"] = ln_alternative[1]
-                extraction_dict[f"{code_name}_tesseract"] = ln_alternative[0]
-                extraction_dict[f"{code_name}_type"] = "hi-tesseract"
             else:
+                # Step 1.e)
                 # Either textract missed, or tesseract, but not both (as we have table match),
                 # # or their confidence is not high, so use tableso use table
                 code = match_info[0]
@@ -747,7 +691,6 @@ def get_reg_id_part(
                 print(f"{EXTRACTION_PREFIX} Table used for {code_name}: {code}")
                 print(f"Line confidence is {code_conf}")
                 print(f"Table match score is {match_info[1]}")
-                extraction_dict[f"{code_name}_type"] = "table"
     return code, code_conf
 
 
@@ -784,8 +727,6 @@ def get_reg_id(response_json, file):
     # Default values
     twenty_code, twenty_max_conf = "", 0
     approval_code, approval_max_conf = "", 0
-    extraction_dict = {}
-    extraction_dict["history"] = []
 
     approval_code_back_up, twenty_code_back_up = None, None
     if "Blocks" in response_json:
@@ -816,7 +757,6 @@ def get_reg_id(response_json, file):
             # ln_twenty2 = twenty_re2.findall(ln_text)
             # If approval code found and we have not found one yet
             # How to choose cutoff? We have done limited experimentation. This is a guess that seemed to perform well in the handful of tests we did
-
             if ln_approval:
                 ln_approval = (
                     fix_wrong_substring(
@@ -838,7 +778,6 @@ def get_reg_id(response_json, file):
                 approval_code,
                 approval_max_conf,
                 "app_code",
-                extraction_dict,
                 reg_id_approved,
             )
 
@@ -870,7 +809,6 @@ def get_reg_id(response_json, file):
                 twenty_code,
                 twenty_max_conf,
                 "twenty_code",
-                extraction_dict,
                 twenty_digit_codes,
             )
             approval_code_back_up = get_code_backup(
@@ -890,9 +828,6 @@ def get_reg_id(response_json, file):
             print(
                 f"{EXTRACTION_PREFIX} Using approval code backup {approval_code} with confidence {approval_max_conf}"
             )
-            extraction_dict["approval_back_up"] = approval_code
-            extraction_dict[f"app_code_type"] = "back-up"
-
         if twenty_code_back_up and twenty_max_conf == 0:
             twenty_code, twenty_max_conf = (
                 twenty_code_back_up[0],
@@ -901,13 +836,10 @@ def get_reg_id(response_json, file):
             print(
                 f"{EXTRACTION_PREFIX} Using twenty code backup {twenty_code} with confidence {twenty_max_conf}"
             )
-            extraction_dict["twenty_back_up"] = twenty_code
-            extraction_dict[f"twenty_code_type"] = "back-up"
 
         # fallback ignoring regular expression match and just using table lookup:
         # we lower the score cutoff for rapidfuzz (extractOne) lookup and
         # only return anything if both tess/text-ract give us the same table lookup value
-
         if approval_max_conf == 0 or twenty_max_conf == 0:
             for ln in lines:
                 ln_text = ln[0].upper()
@@ -927,7 +859,6 @@ def get_reg_id(response_json, file):
                     approval_code,
                     approval_max_conf,
                     "app_code_fallback",
-                    extraction_dict,
                     reg_id_approved,
                     extractOne_cutoff=LOW_EXTRACTION_CUTOFF,
                 )
@@ -938,7 +869,6 @@ def get_reg_id(response_json, file):
                     twenty_code,
                     twenty_max_conf,
                     "twenty_code_fallback",
-                    extraction_dict,
                     twenty_digit_codes,
                     extractOne_cutoff=LOW_EXTRACTION_CUTOFF,
                 )
@@ -966,7 +896,7 @@ def get_reg_id(response_json, file):
     reg_id_match = delimit_known_words_by_spaces(reg_id_match)
     reg_id_match = double__elimination(reg_id_match)
 
-    return reg_id_match, confidence_reg_id, extraction_dict
+    return reg_id_match, confidence_reg_id
 
 
 def double__elimination(string):
@@ -993,6 +923,10 @@ def fill_in_missing_underscores(string1, string2):
 
 
 def get_code_backup(ln_conf, ln, ln_alternative, code_back_up):
+    """
+    Returns a code that would be used as a back up if Step 1. fails
+    in Step 2. here: https://www.notion.so/Reg_Id-extraction-logic-eea5f0bd597b4970ac257af38fcaea13
+    """
     if ln_alternative and ln:
         filled_in_string = fill_in_missing_underscores(ln[0], ln_alternative[0])
         if filled_in_string:
@@ -1077,95 +1011,83 @@ def fix_wrong_substring(string, reg_exps_with_replacement):
     return string
 
 
-# def fix_wrong_prefix(string, known_bad_prefixes):
-#     changed = True
-#     string = string.strip()
-#     while changed:
-#         changed = False
-#         for known_bad_prefix in known_bad_prefixes:
-#             if not string.find(known_bad_prefix):
-#                 string = string.replace(
-#                     known_bad_prefix, known_bad_prefixes[known_bad_prefix], 1
-#                 )
-#                 changed = True
-#     return string
-
-
-# print(fix_wrong_substring("00_W", known_bad_approval_prefix_reg_exps))
-
+# --------------- Helper Functions to call textract APIs ------------------
 
 def detect_text(bucket, key):
     response = textract.detect_document_text(
-        Document={"S3Object": {"Bucket": bucket, "Name": key}}
+        Document={
+            'S3Object': {
+                'Bucket': bucket,
+                'Name': key
+            }
+        }
     )
     return response
-
 
 def euclidean_distance(point1, point2):
     # Calculate the squared differences of coordinates
     squared_diffs = [(x - y) ** 2 for x, y in zip(point1, point2)]
-
+    
     # Sum the squared differences and take the square root
     distance = math.sqrt(sum(squared_diffs))
-
+    
     return distance
 
 
+
 def get_next_line(query_string, response_json):
-    """To obtain the next line in the text after the query string, we search
+    '''To obtain the next line in the text after the query string, we search
     through lines to find lower left x value of the query box. If distance
     between lower left of `query_string` and upper left of following line is
     close, we return it.
     Outputs a string consisting of the next line.
-    """
+    '''
     query_x = 0
     upper_left = 0
     next_line = None
-
-    # Check that query_string not null
-    if query_string and ("Blocks" in response_json):
-        for item in response_json["Blocks"]:
-            if item["BlockType"] == "LINE":
-                # Search through lines to find line corresponding
+    
+    #Check that query_string not null
+    if query_string and ('Blocks' in response_json):
+        for item in response_json['Blocks']:
+            if item['BlockType'] == 'LINE':
+                #Search through lines to find line corresponding
                 # to query string, record lower_left, then continue until
                 # line found with upper_left approximately equal to it.
-                # query_x == 0 indicates it was not found yet
+                #query_x == 0 indicates it was not found yet
                 if query_x != 0:
-                    # check if upper left of line equals lower_left of query
-                    line_x = item["Geometry"]["Polygon"][0]["X"]
-                    line_y = item["Geometry"]["Polygon"][0]["Y"]
-                    distance = euclidean_distance((query_x, query_y), (line_x, line_y))
+                    #check if upper left of line equals lower_left of query
+                    line_x = item['Geometry']['Polygon'][0]['X']
+                    line_y = item['Geometry']['Polygon'][0]['Y']
+                    distance = euclidean_distance((query_x,query_y),(line_x,line_y))
                     if distance <= 0.008:
-                        next_line = item["Text"]
-                        break  # exit loop and return
-
-                # Check if we found line corresponding to input string
-                # Sometimes query result can miss characters such as umlaut
-                # May assume query_result is non-empty but may have dropped
-                # a character from the actual line_string
-                line_string = item["Text"]
-
-                # check if query chars are substring of line string
+                        next_line = item['Text']
+                        break #exit loop and return
+                        
+                #Check if we found line corresponding to input string
+                #Sometimes query result can miss characters such as umlaut
+                #May assume query_result is non-empty but may have dropped
+                #a character from the actual line_string
+                line_string = item['Text']
+                
+                #check if query chars are substring of line string
                 diff = len(line_string) - len(query_string)
                 if 0 <= diff <= 1 and all(x in line_string for x in query_string):
-                    # get lower left
-                    query_x = item["Geometry"]["Polygon"][3]["X"]
-                    query_y = item["Geometry"]["Polygon"][3]["Y"]
-
+                    #get lower left
+                    query_x = item['Geometry']['Polygon'][3]['X']
+                    query_y = item['Geometry']['Polygon'][3]['Y']
+                
     return next_line
-
 
 def get_city(address_line2_string):
     city = None
     if address_line2_string:
         pattern = r"\b[A-Z]{2}\b"
-        no_state = re.sub(pattern, "", address_line2_string)
+        no_state = re.sub(pattern, '', address_line2_string)
         pattern = "[0-9]{5}(?:-[0-9]{4})?"
-        no_zip_no_state = re.sub(pattern, "", no_state)
+        no_zip_no_state = re.sub(pattern, '', no_state) 
         city = no_zip_no_state.rstrip()
-        city = city.rstrip(",")
+        city = city.rstrip(',')
     return city
-
 
 def get_state(address_line2_string):
     state_string = None
@@ -1173,150 +1095,128 @@ def get_state(address_line2_string):
         pattern = r"\b[A-Z]{2}\b"
         result = re.findall(pattern, address_line2_string)
         if result:
-            state_string = result[-1]  # get last in case two letter city
+            state_string = result[-1] #get last in case two letter city
     return state_string
-
 
 def get_zip(address_line2_string):
     zip_string = None
     if address_line2_string:
         # Extract ZIP code from string
-        # in case of bad characters, etc.
+        #in case of bad characters, etc.
         pattern = "[0-9]{5}(?:-[0-9]{4})?"
-        formatted_zip = re.findall(pattern, address_line2_string)  # returns only zip
+        formatted_zip = re.findall(pattern, address_line2_string) # returns only zip
         if formatted_zip:
             zip_string = formatted_zip[0]
     return zip_string
 
-
 def get_query_results(ref_id, response_json):
-    """Given id and response, search for
-    query results for that id and return results"""
-
-    for b in response_json["Blocks"]:
-        if b["BlockType"] == "QUERY_RESULT" and b["Id"] == ref_id:
+    '''Given id and response, search for 
+    query results for that id and return results'''
+    
+    for b in response_json['Blocks']:
+        if b['BlockType'] == 'QUERY_RESULT' and b['Id'] == ref_id:
             return {
-                "value": b.get("Text"),
-                "confidence": b.get("Confidence"),
-                "block": b,
-            }
+                        'value': b.get('Text'), 
+                        'confidence': b.get('Confidence'), 
+                        'block': b
+                    }
     return None
 
-
 def parse_response_to_json(response_json):
-    """Update query_output dictionary above with response information
+    '''Update query_output dictionary above with response information
     in format required for Condition to check it
     Input: response JSON from textract API
-    """
-    # if response not null
+    '''
+    #if response not null
     if response_json:
-        # for each query/alias parse results from response
-        for b in response_json["Blocks"]:
-            if b["BlockType"] == "QUERY" and "Relationships" in b:
-                ref_id = b["Relationships"][0]["Ids"][0]  # record id
+        #for each query/alias parse results from response 
+        for b in response_json['Blocks']:
+            if b['BlockType'] == 'QUERY' and 'Relationships' in b:
+                ref_id = b['Relationships'][0]['Ids'][0] #record id
                 results = get_query_results(ref_id, response_json)
-                q_alias = b["Query"]["Alias"]  # record alias
+                q_alias = b['Query']['Alias'] #record alias
                 query_output[q_alias] = results
-
+                    
     return query_output
-
-
+    
+    
 def save_dict_to_s3(dict_obj, bucket_name, file_name):
-    """Saves dict_obj json key value pairs obtained from the queries,
+    '''Saves dict_obj json key value pairs obtained from the queries,
     to the target S3 bucket bucket_name under file_name.
     input1: python dictionary object
     input2: bucket name in form of string
     input3: filename in form of string
-    """
+    '''
     try:
         s3.Object(bucket_name, file_name).put(Body=json.dumps(dict_obj))
-        status = f"{file_name} saved to s3://{bucket_name}"
+        status = f'{file_name} saved to s3://{bucket_name}'
     except Exception as e:
-        status = f"Failed to save: {e}"
-
-    return status
-
-
+        status = f'Failed to save: {e}'
+            
+    return status 
+    
 # --------------- Condition class --------------
 from enum import Enum
 import re
-
 
 class Condition:
     _data = None
     _conditions = None
     _result = None
-
+    
     def __init__(self, data, conditions):
         self._data = data
         self._conditions = conditions
-
+    
     def check(self, field_name, obj):
-        r, s = [], []
+        r,s = [],[]
         for c in self._conditions:
             # Matching field_name or field_name_regex
             condition_setting = c.get("condition_setting")
-            if c["field_name"] == field_name or (
-                c.get("field_name") is None
-                and c.get("field_name_regex") is not None
-                and re.search(c.get("field_name_regex"), field_name)
-            ):
+            if c["field_name"] == field_name \
+                    or (c.get("field_name") is None and c.get("field_name_regex") is not None and re.search(c.get("field_name_regex"), field_name)):
                 field_value, block = None, None
                 if obj is not None:
                     field_value = obj.get("value")
                     block = obj.get("block")
                     confidence = obj.get("confidence")
-
-                if c["condition_type"] == "Required" and (
-                    obj is None or field_value is None or len(str(field_value)) == 0
-                ):
-                    r.append(
-                        {
-                            "message": f"The required field [{field_name}] is missing.",
-                            "field_name": field_name,
-                            "field_value": field_value,
-                            "condition_type": str(c["condition_type"]),
-                            "condition_setting": condition_setting,
-                            "condition_category": c["condition_category"],
-                            "block": block,
-                        }
-                    )
-                elif (
-                    c["condition_type"] == "ConfidenceThreshold"
-                    and obj is not None
-                    and c["condition_setting"] is not None
-                    and float(confidence) < float(c["condition_setting"])
-                ):
-                    r.append(
-                        {
-                            "message": f"The field [{field_name}] confidence score {confidence} is LOWER than the threshold {c['condition_setting']}",
-                            "field_name": field_name,
-                            "field_value": field_value,
-                            "condition_type": str(c["condition_type"]),
-                            "condition_setting": condition_setting,
-                            "condition_category": c["condition_category"],
-                            "block": block,
-                        }
-                    )
-
-                elif (
-                    field_value is not None
-                    and c["condition_type"] == "ValueRegex"
-                    and condition_setting is not None
-                    and re.search(condition_setting, str(field_value)) is None
-                ):
-                    r.append(
-                        {
-                            "message": f"{c['description']}",
-                            "field_name": field_name,
-                            "field_value": field_value,
-                            "condition_type": str(c["condition_type"]),
-                            "condition_setting": condition_setting,
-                            "condition_category": c["condition_category"],
-                            "block": block,
-                        }
-                    )
-
+                
+                if c["condition_type"] == "Required" \
+                        and (obj is None or field_value is None or len(str(field_value)) == 0):
+                    r.append({
+                                "message": f"The required field [{field_name}] is missing.",
+                                "field_name": field_name,
+                                "field_value": field_value,
+                                "condition_type": str(c["condition_type"]),
+                                "condition_setting": condition_setting,
+                                "condition_category":c["condition_category"],
+                                "block": block
+                            })
+                elif c["condition_type"] == "ConfidenceThreshold" \
+                    and obj is not None \
+                    and c["condition_setting"] is not None and float(confidence) < float(c["condition_setting"]):
+                    r.append({
+                                "message": f"The field [{field_name}] confidence score {confidence} is LOWER than the threshold {c['condition_setting']}",
+                                "field_name": field_name,
+                                "field_value": field_value,
+                                "condition_type": str(c["condition_type"]),
+                                "condition_setting": condition_setting,
+                                "condition_category":c["condition_category"],
+                                "block": block
+                            })
+                
+                elif field_value is not None and c["condition_type"] == "ValueRegex" and condition_setting is not None \
+                        and re.search(condition_setting, str(field_value)) is None:
+                    r.append({
+                                "message": f"{c['description']}",
+                                "field_name": field_name,
+                                "field_value": field_value,
+                                "condition_type": str(c["condition_type"]),
+                                "condition_setting": condition_setting,
+                                "condition_category":c["condition_category"],
+                                "block": block
+                            })
+                
                 # field has condition defined and sastified
                 s.append(
                     {
@@ -1325,115 +1225,108 @@ class Condition:
                         "field_value": field_value,
                         "condition_type": str(c["condition_type"]),
                         "condition_setting": condition_setting,
-                        "condition_category": c["condition_category"],
-                        "block": block,
-                    }
-                )
-
+                        "condition_category":c["condition_category"],
+                        "block": block
+                    })
+                
         return r, s
-
+        
     def check_all(self):
         if self._data is None or self._conditions is None:
             return None
-        # if rule missed, this list holds list
+        #if rule missed, this list holds list
         broken_conditions = []
         rules_checked = []
         broken_conditions_with_all_fields_displayed = []
-        # iterate through rules_data dictionary
-        # key is a field, value/obj is a
-        # dictionary, for instance name_rule_data
-        # is the dictionary for ADDRESSEE
+        #iterate through rules_data dictionary
+        #key is a field, value/obj is a
+        #dictionary, for instance name_rule_data
+        #is the dictionary for ADDRESSEE
         for key, obj in self._data.items():
             value = None
             if obj is not None:
                 value = obj.get("value")
 
-            if value is not None and type(value) == str:
-                value = value.replace(" ", "")
-            # Check if this field passed rules:
-            # if so, r and s are both []
-            # if not, r is list of one or more of the dictionaries
-            # seen in the check function
+            if value is not None and type(value)==str:
+                value = value.replace(' ','')
+            #Check if this field passed rules:
+            #if so, r and s are both []
+            #if not, r is list of one or more of the dictionaries
+            #seen in the check function
             r, s = self.check(key, obj)
-            # If field missed rule
+            #If field missed rule
             if r and len(r) > 0:
-                # append to bc list
+                #append to bc list
                 broken_conditions += r
-            # If rule checked for field
+            #If rule checked for field
             if s and len(s) > 0:
                 rules_checked += s
-            # If field missed or not
-            # append to b_c_w_a_f_d
+            #If field missed or not
+            #append to b_c_w_a_f_d
             if s and len(s) > 0:
                 if r and len(r) > 0:
-                    # If rule missed on this field, record it
+                    #If rule missed on this field, record it
                     broken_conditions_with_all_fields_displayed += r
                 else:
-                    # If no rule missed, record field
+                    #If no rule missed, record field 
                     broken_conditions_with_all_fields_displayed += s
 
         # apply index
         idx = 0
-        # iterate through dictionaries
+        #iterate through dictionaries
         for r in broken_conditions_with_all_fields_displayed:
             idx += 1
             r["index"] = idx
-        # If at least one rule missed, display with it all fields
-        # otherwise broken c
+        #If at least one rule missed, display with it all fields
+        #otherwise broken c
         if broken_conditions:
             broken_conditions = broken_conditions_with_all_fields_displayed
         return broken_conditions, rules_checked
-
-
 # --------------- Dictionaries for data storage ------------------
 query_output = {
-    "ADDRESSEE": None,
-    "STREET_ADDRESS": None,
-    "CITY": None,
-    "STATE": None,
-    "ZIP_CODE_4": None,
+          'ADDRESSEE': None,
+          'STREET_ADDRESS': None,
+          'CITY': None,
+          'STATE': None,
+          'ZIP_CODE_4': None
+        }
+#Centene fields format for saving to S3 
+centene_format ={
+    'RICOH_DCN': None,
+    'REGULATORY_APPROVAL_ID': None,
+    'ADDRESSEE': None,
+    'ADDRESS_LINE_1': None,
+    'ADDRESS_LINE_2': None,
+    'CITY':None,
+    'STATE': None,
+    'ZIP_CODE_4': None,
+    'BATCH': None,
+    'BATCH_PREFIX': None
 }
-# Centene fields format for saving to S3
-centene_format = {
-    "RICOH_DCN": None,
-    "REGULATORY_APPROVAL_ID": None,
-    "ADDRESSEE": None,
-    "ADDRESS_LINE_1": None,
-    "ADDRESS_LINE_2": None,
-    "CITY": None,
-    "STATE": None,
-    "ZIP_CODE_4": None,
-    "BATCH": None,
-    "BATCH_PREFIX": None,
-}
-
-
 # --------------- Main handler ------------------
 def lambda_handler(event, context):
-    for filename in os.listdir("tmp"):
-        # if filename.endswith('.tif'):  # Check if the file ends with ".tif"
-        file_path = os.path.join("tmp", filename)  # Get the full file path
-        os.remove(file_path)  # Remove the file
-        print(f"Removed file: {filename}")
-
-    global extraction_log_df
-    """Demonstrates S3 trigger that uses
+    '''Demonstrates S3 trigger that uses
     textract APIs to detect text, query text in S3 Object.
-    """
-    print("Received event: " + json.dumps(event, indent=2))
+    '''
+    print('Received event: ' + json.dumps(event, indent=2))
 
     # Get the object from the event
-    bucket = event["Records"][0]["s3"]["bucket"]["name"]
-    key = urllib.parse.unquote_plus(event["Records"][0]["s3"]["object"]["key"])
+    bucket = event['Records'][0]['s3']['bucket']['name']
+    key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'])
     print(key)
-    # ------------Image processing on TIF ----------------
+    #--------------------Clean up tmp----------------------------------
+    for filename in os.listdir('/tmp'): 
+        file_path = os.path.join('/tmp', filename)  # Get the full file path
+        os.remove(file_path)  # Remove the file
+    
+    #------------Image processing on TIF ----------------
     ## save TIF
-    local_file_name = "tmp/{}".format(os.path.basename(key))
-    # s3.download_file(Bucket=bucket, Key=key, Filename=local_file_name)
-    # inFile = open(local_file_name, "r")
-    print(f"local_file_name is: {local_file_name}")
-
-    # Download file from S3 to local tmp directory
+    local_file_name = '/tmp/{}'.format(os.path.basename(key))
+    #s3.download_file(Bucket=bucket, Key=key, Filename=local_file_name)
+    #inFile = open(local_file_name, "r")
+    print(f'local_file_name is: {local_file_name}')
+    
+    #Download file from S3 to local /tmp directory
     try:
         s3.Object(bucket, key).download_file(local_file_name)
         print(f"File downloaded successfully from S3.")
@@ -1441,458 +1334,316 @@ def lambda_handler(event, context):
         print(f"Error downloading file from S3: {e}")
 
     split_into_pages_top_and_bottom(local_file_name)
-
-    # directory = 'tmp'  # Replace with your directory path
-    # print('currently in tmp')
-    # for filename in os.listdir(directory):
+    
+    
+    #directory = '/tmp'  # Replace with your directory path
+    #print('currently in tmp')
+    #for filename in os.listdir(directory):
     #    print(filename)
-
-    # Insert 'file' key pair
+    
+    # Insert 'file' key pair 
     # Split the string by '/'
-    parts = key.split("/")
+    parts = key.split('/')
 
     # Get the text after the final '/'
     ricoh_dcn = parts[-1]
 
-    ##########################################################
-    # centene_format['RICOH_DCN'] = parts[-1][:-4] #strip .T
-    # centene_format['BATCH'] = parts[-2]
-    # centene_format['BATCH_PREFIX'] = parts[-3]
-    ##########################################################
-    # Save to S3 in correct place in output bucket
-
-    # Get Regid
-
+    centene_format['RICOH_DCN'] = parts[-1][:-4] #strip .T
+    centene_format['BATCH'] = parts[-2]
+    centene_format['BATCH_PREFIX'] = parts[-3]
+    
+     #Save to S3 in correct place in output bucket
+    
+    
+    #Get Regid
+    
     bottom_list = []
     top_list = []
     reg_id_conf = 0
-    files = os.listdir("tmp")
+    files = os.listdir('/tmp')
     for file in files:
-        # print('Here is one file:')
-        # print(file)
-        if ".tif" in file:
-            print("Save to output bucket this:")
-            s3_filename = f"{key.rstrip(parts[-1])}{file}"
-
-            # s3_filename = f'{parts[-4]}/{parts[-3]}/{parts[-2]}/{file}'
-            print(f"s3_filename is {s3_filename}")
+        #print('Here is one file:')
+        #print(file)
+        if '.tif' in file:
+            print('Save to output bucket this:')
+            s3_filename = f'{key.rstrip(parts[-1])}{file}'
+            
+            #s3_filename = f'{parts[-4]}/{parts[-3]}/{parts[-2]}/{file}'
+            print(f's3_filename is {s3_filename}')
             # Read the local file as bytes
-            # with open(local_file_name, 'rb') as f:
+            #with open(local_file_name, 'rb') as f:
             #    file_bytes = f.read()
             ##s3.upload_fileobj(
             ##    fileobj=file_bytes,
             #    bucket=output_bucket,
             #    key=s3_filename
             #    )
-            # s3.Object(output_bucket, s3_filename).put(Body=file_bytes)
-            # s3.put_object(
+            #s3.Object(output_bucket, s3_filename).put(Body=file_bytes)
+            #s3.put_object(
             #    Body=file_bytes,
             #    Bucket=output_bucket,
             #    Key=s3_filename
             #    )
-            client.upload_file("tmp/" + file, output_bucket, s3_filename)
-            if "bottom" in file:
+            client.upload_file('/tmp/' + file, output_bucket, s3_filename)
+            if 'bottom' in file:
                 bottom_list.append(s3_filename)
-            if "top" in file:
+            if 'top' in file:
                 top_list.append(s3_filename)
-    # iterate over pages bottom
+    #iterate over pages bottom  
     bottom_response = []
-    # set regid file to be cilt if None, if found update to be that
+    #set regid file to be cilt if None, if found update to be that
     reg_id_file = None
     bottom_list = sorted(bottom_list, key=lambda x: x[-13:])
-    print(f"Bottom list is: {bottom_list}")
-
-    with open(f"outputs/output-{output_suffix}.txt", "a") as f:
-        f.write(f"\n*******{key}*****************")
-
+    print(f'Bottom list is: {bottom_list}')
+    
     for file in bottom_list:
-        # Call the analyze_document API
-
+    # Call the analyze_document API
+    
         print(file)
-
+        
         try:
             # Call the analyze_document API
-            print(f"calling Textract on {file}")
+            print(f'calling Textract on {file}')
             bottom_response = textract.detect_document_text(
-                Document={"S3Object": {"Bucket": output_bucket, "Name": file}}
-            )
-
+                Document={'S3Object': {'Bucket': output_bucket, 'Name':file}})
+                    
         except Exception as e:
             print(e)
-
+                
         if bottom_response:
-            print(f"Textract called on {file} sucessfully.")
-            # Use document knowledge that RegID at bottom and certain format to grab it
-            file_name = file.split("/")[-1]
-            reg_id, reg_id_conf, extration_dict = get_reg_id(bottom_response, file_name)
+            print(f'Textract called on {file} sucessfully.')
+            #Use document knowledge that RegID at bottom and certain format to grab it 
+            reg_id, reg_id_conf = get_reg_id(bottom_response, file.split("/")[-1])
             if reg_id_conf > 0:
-                print(f"RegID code found in {file}.")
+                print(f'RegID code found in {file}.')
                 print(reg_id, reg_id_conf)
-                # save location
+                #save location
                 reg_id_file = file
-
-                centene_format["REGULATORY_APPROVAL_ID"] = reg_id
-
-                with open(f"outputs/output-{output_suffix}.txt", "a") as f:
-                    f.write(f"******{file_name}****\n")
-                    f.write(f"{reg_id} .....with confidence {reg_id_conf}")
-                    extration_dict["doc"] = file_name
-                    extration_dict["RegId"] = reg_id
-                    extration_dict["RegIdConf"] = reg_id_conf
-                    extraction_log_df = pd.concat(
-                        [extraction_log_df, pd.DataFrame([extration_dict])],
-                        ignore_index=True,
-                    )
-
+                
+                centene_format['REGULATORY_APPROVAL_ID'] = reg_id
                 break
+    
+    #In case no name or no regid found, make sure regid blank         
+    if not reg_id_file:
+        centene_format['REGULATORY_APPROVAL_ID'] = ''
+    
+    query_response = [] 
+    #Define to be cilt if none
+    name_file = None
+    name_conf = 0
+    top_list = sorted(top_list, key=lambda x: x[-13:])
+    print(f'Top list is: {top_list}')
+    
+    for file in top_list:
+        print(f'Top file is : {file}')
+        try:
+            # Calls textract detect_document_text API to detect text in the document S3 object
+            #text_response = detect_text(bucket, key)
+            print(f'Calling Textract on {file}')
+            # Calls textract analyze_document API to query S3 object
+            query_response = textract.analyze_document(Document={'S3Object': {'Bucket': output_bucket, 'Name': file}},
+            FeatureTypes=['QUERIES'],
+            QueriesConfig={'Queries': queries}
+            )
+        except Exception as e:
+            print(e)
+            print('Error processing object {} from bucket {}. '.format(key, bucket) +
+              'Make sure your object and bucket exist and your bucket is in the same region as this function.')
+            #Save error to file
+            #status = save_dict_to_s3(centene_format, output_bucket,output_file_name)
+            #print(status)
+            raise e
+        if query_response:
+            
+            # Store json of parsed response of first page
+            query_data = parse_response_to_json(query_response)
+        
+            #Check if query name available
+            if query_data['ADDRESSEE']:
+                print(f'Name found on {file}')
+                name_file = file
+                name = query_data['ADDRESSEE']['value']
+                name_conf = query_data['ADDRESSEE']['confidence']
+                
+                #Function get_next_line searches for name in lines, if not found, returns null
+                #If ad1 returns null, then query name wrong or does not exist in document lines
+                ad1 = get_next_line(name,query_response)
+                
+                if ad1: #If ad1 not null, query name is correct, so use it to get fields
+                    ad2 = get_next_line(ad1, query_response)
+                    ad3 = get_next_line(ad2, query_response)
+                    
+                
+                    if not ad3: #If no 3rd address line 
+                        centene_format['ADDRESSEE'] = name
+                        centene_format['ADDRESS_LINE_1'] = ad1
+                        centene_format['ADDRESS_LINE_2'] = ''
+                        centene_format['CITY'] = get_city(ad2)
+                        centene_format['STATE'] = get_state(ad2)
+                        centene_format['ZIP_CODE_4'] = get_zip(ad2)
+                    else: #If there is a 3rd address line
+                        centene_format['ADDRESSEE'] = name
+                        centene_format['ADDRESS_LINE_1'] = ad1
+                        centene_format['ADDRESS_LINE_2'] = ad2
+                        centene_format['CITY'] = get_city(ad3)
+                        centene_format['STATE'] = get_state(ad3)
+                        centene_format['ZIP_CODE_4'] = get_zip(ad3)
+                else: #Query name is wrong or doesn't exist, pass to query defaults
+                    street_address = ''
+                    city = ''
+                    state = ''
+                    zip_code = ''
+                    
+                    #If queries found fields use them
+                    if query_data['STREET_ADDRESS']:
+                        street_address = query_data['STREET_ADDRESS']['value']
+                    if query_data['CITY']:
+                        city = query_data['CITY']['value']
+                    if query_data['STATE']:
+                        state = query_data['STATE']['value']
+                    if query_data['ZIP_CODE_4']:
+                        zip_code = query_data['ZIP_CODE_4']['value']
+                        
+                    #Now input the values we have    
+                    centene_format['ADDRESSEE'] = name    
+                    centene_format['ADDRESS_LINE_1'] = street_address
+                    centene_format['ADDRESS_LINE_2'] = ''
+                    centene_format['CITY'] = city
+                    centene_format['STATE'] = state
+                    centene_format['ZIP_CODE_4'] = zip_code
+                    
+                break #break out of loop
+    
+    
+    #Finally, update the query_data with new confidence values
+    # and values based on what we found
+    #query_data
+    #TEMPORARY: make fields derived from name have same confidence
+    #We may want to pass in the confidence on the line (e.g. on City line, state line
+    # etc. instead
+    #OPTIONAL: Make confidence minimum of all fields, that way all fields
+    #show in the A2I when one field is below cutoff level
+    
+    
+    name_rule_data = {'value': centene_format['ADDRESSEE'],
+            'confidence': name_conf,
+            'block': None
+        }
+    ad1_rule_data = {'value': centene_format['ADDRESS_LINE_1'],
+        'confidence': name_conf,
+        'block': None
+        }
+    ad2_rule_data = {'value': centene_format['ADDRESS_LINE_2'],
+        'confidence': name_conf,
+        'block': None
+        }
+    city_rule_data = {'value': centene_format['CITY'],
+        'confidence': name_conf,
+        'block': None
+        }
+    state_rule_data = {'value': centene_format['STATE'],
+        'confidence': name_conf,
+        'block': None
+        }
+    zip_rule_data = {'value': centene_format['ZIP_CODE_4'],
+        'confidence': name_conf,
+        'block': None
+        }
+    #reg_id moved to bottom to match where it is found on page
+    #labelers wanted the webpage they see to display regid as the last field
+    reg_id_rule_data = {'value': centene_format['REGULATORY_APPROVAL_ID'],
+        'confidence': reg_id_conf,
+        'block': None
+        }
+    rules_data = {'ADDRESSEE': name_rule_data,
+        'ADDRESS_LINE_1': ad1_rule_data,
+        'ADDRESS_LINE_2': ad2_rule_data,
+        'CITY': city_rule_data,
+        'STATE' : state_rule_data,
+        'ZIP_CODE_4': zip_rule_data,
+        'REGULATORY_APPROVAL_ID': reg_id_rule_data,
+        }
 
-    # TOP PROCESSING TEMPORARILY COMMENTED OUT
-    ################################################################################################
-    # In case no name or no regid found, make sure regid blank
-    # if not reg_id_file:
-    #     centene_format["REGULATORY_APPROVAL_ID"] = ""
+    #Validate business rules
+    con = Condition(rules_data,rules)
+    rule_missed, rule_checked = con.check_all()
+    rule_missed_string = ', '.join(element['message'] for element in rule_missed)
+    centene_format['RULE_MISSED_COUNT'] = len(rule_missed)
+    centene_format['RULE_MISSED_STRING'] = rule_missed_string
+    
+    #Save filenames 
+    output_file_name = f'{key[:-4]}.json'
+    rm_file_name = f'{key[:-4]}-rule-missed.json'
+    rs_file_name = f'{key[:-4]}-rule-checked.json'
+    
+    #Save data to s3 and return if save was successful or not
+    status = save_dict_to_s3(centene_format, output_bucket,output_file_name)
+    #Save rule missed list
+    s3.Object(output_bucket, rm_file_name).put(Body=json.dumps(rule_missed))
+    #Save rule satisfied list
+    s3.Object(output_bucket, rs_file_name).put(Body=json.dumps(rule_checked))
+    
+    #-------Image for A2I--------------------------------------
+    s3_filename_a2i = f'{key[:-4]}-image-for-A2I.png'
+    
+    #Combine the partial pages where the fields were found
+    if name_file and reg_id_file:
+        name_file_parts = name_file.split('/')
+        reg_id_file_parts = reg_id_file.split('/')
+        tmp_name_file = '/tmp/'+ name_file_parts[-1]
+        tmp_regid_file = '/tmp/' + reg_id_file_parts[-1]
+        #Recombine creates an image in /tmp called image-for-A2I.png
+        #using the top and bottom images where names and resp. codes
+        #were found.
+        recombine(tmp_name_file,tmp_regid_file)
+        
+        #We upload that to the correct bucket and prefix
+        print(f's3_filename is {s3_filename_a2i}')
+        local_a2i_image_path = '/tmp/image-for-A2I.png'
+        client.upload_file(local_a2i_image_path, output_bucket, s3_filename_a2i)
 
-    # query_response = []
-    # # Define to be cilt if none
-    # name_file = None
-    # name_conf = 0
-    # top_list = sorted(top_list, key=lambda x: x[-13:])
-    # print(f"Top list is: {top_list}")
+    
+    else: #CILT
+        #upload cilt image to correct bucket with prefix
+        
+        local_a2i_image_path = '/tmp/image-for-A2I.png'
+        #upload cilt image
+        client.upload_file('/tmp/cilt.png', output_bucket, s3_filename_a2i)
+        
+        
+    
+    #-----------------Create A2I labeling job--------------------------
 
-    # for file in top_list:
-    #     print(f"Top file is : {file}")
-    #     try:
-    #         # Calls textract detect_document_text API to detect text in the document S3 object
-    #         # text_response = detect_text(bucket, key)
-    #         print(f"Calling Textract on {file}")
-    #         # Calls textract analyze_document API to query S3 object
-    #         query_response = textract.analyze_document(
-    #             Document={"S3Object": {"Bucket": output_bucket, "Name": file}},
-    #             FeatureTypes=["QUERIES"],
-    #             QueriesConfig={"Queries": queries},
-    #         )
-    #     except Exception as e:
-    #         print(e)
-    #         print(
-    #             "Error processing object {} from bucket {}. ".format(key, bucket)
-    #             + "Make sure your object and bucket exist and your bucket is in the same region as this function."
-    #         )
-    #         # Save error to file
-    #         # status = save_dict_to_s3(centene_format, output_bucket,output_file_name)
-    #         # print(status)
-    #         raise e
-    #     if query_response:
-    #         # Store json of parsed response of first page
-    #         query_data = parse_response_to_json(query_response)
+    
+    #-----------------Clean up------------------------------------------
+    # Get disk usage of /tmp directory
+    usage = os.statvfs('/tmp')
+    total_space = usage.f_frsize * usage.f_blocks
+    used_space = usage.f_frsize * (usage.f_blocks - usage.f_bfree)
+    available_space = usage.f_frsize * usage.f_bavail
 
-    #         # Check if query name available
-    #         if query_data["ADDRESSEE"]:
-    #             print(f"Name found on {file}")
-    #             name_file = file
-    #             name = query_data["ADDRESSEE"]["value"]
-    #             name_conf = query_data["ADDRESSEE"]["confidence"]
+    # Convert to human-readable format
+    total_space_gb = total_space / (1024 ** 3)
+    used_space_gb = used_space / (1024 ** 3)
+    available_space_gb = available_space / (1024 ** 3)
 
-    #             # Function get_next_line searches for name in lines, if not found, returns null
-    #             # If ad1 returns null, then query name wrong or does not exist in document lines
-    #             ad1 = get_next_line(name, query_response)
-
-    #             if (
-    #                 ad1
-    #             ):  # If ad1 not null, query name is correct, so use it to get fields
-    #                 ad2 = get_next_line(ad1, query_response)
-    #                 ad3 = get_next_line(ad2, query_response)
-
-    #                 if not ad3:  # If no 3rd address line
-    #                     centene_format["ADDRESSEE"] = name
-    #                     centene_format["ADDRESS_LINE_1"] = ad1
-    #                     centene_format["ADDRESS_LINE_2"] = ""
-    #                     centene_format["CITY"] = get_city(ad2)
-    #                     centene_format["STATE"] = get_state(ad2)
-    #                     centene_format["ZIP_CODE_4"] = get_zip(ad2)
-    #                 else:  # If there is a 3rd address line
-    #                     centene_format["ADDRESSEE"] = name
-    #                     centene_format["ADDRESS_LINE_1"] = ad1
-    #                     centene_format["ADDRESS_LINE_2"] = ad2
-    #                     centene_format["CITY"] = get_city(ad3)
-    #                     centene_format["STATE"] = get_state(ad3)
-    #                     centene_format["ZIP_CODE_4"] = get_zip(ad3)
-    #             else:  # Query name is wrong or doesn't exist, pass to query defaults
-    #                 street_address = ""
-    #                 city = ""
-    #                 state = ""
-    #                 zip_code = ""
-
-    #                 # If queries found fields use them
-    #                 if query_data["STREET_ADDRESS"]:
-    #                     street_address = query_data["STREET_ADDRESS"]["value"]
-    #                 if query_data["CITY"]:
-    #                     city = query_data["CITY"]["value"]
-    #                 if query_data["STATE"]:
-    #                     state = query_data["STATE"]["value"]
-    #                 if query_data["ZIP_CODE_4"]:
-    #                     zip_code = query_data["ZIP_CODE_4"]["value"]
-
-    #                 # Now input the values we have
-    #                 centene_format["ADDRESSEE"] = name
-    #                 centene_format["ADDRESS_LINE_1"] = street_address
-    #                 centene_format["ADDRESS_LINE_2"] = ""
-    #                 centene_format["CITY"] = city
-    #                 centene_format["STATE"] = state
-    #                 centene_format["ZIP_CODE_4"] = zip_code
-
-    #             break  # break out of loop
-
-    # # Finally, update the query_data with new confidence values
-    # # and values based on what we found
-    # # query_data
-    # # TEMPORARY: make fields derived from name have same confidence
-    # # We may want to pass in the confidence on the line (e.g. on City line, state line
-    # # etc. instead
-    # # OPTIONAL: Make confidence minimum of all fields, that way all fields
-    # # show in the A2I when one field is below cutoff level
-
-    # name_rule_data = {
-    #     "value": centene_format["ADDRESSEE"],
-    #     "confidence": name_conf,
-    #     "block": None,
-    # }
-    # ad1_rule_data = {
-    #     "value": centene_format["ADDRESS_LINE_1"],
-    #     "confidence": name_conf,
-    #     "block": None,
-    # }
-    # ad2_rule_data = {
-    #     "value": centene_format["ADDRESS_LINE_2"],
-    #     "confidence": name_conf,
-    #     "block": None,
-    # }
-    # city_rule_data = {
-    #     "value": centene_format["CITY"],
-    #     "confidence": name_conf,
-    #     "block": None,
-    # }
-    # state_rule_data = {
-    #     "value": centene_format["STATE"],
-    #     "confidence": name_conf,
-    #     "block": None,
-    # }
-    # zip_rule_data = {
-    #     "value": centene_format["ZIP_CODE_4"],
-    #     "confidence": name_conf,
-    #     "block": None,
-    # }
-    # # reg_id moved to bottom to match where it is found on page
-    # # labelers wanted the webpage they see to display regid as the last field
-    # reg_id_rule_data = {
-    #     "value": centene_format["REGULATORY_APPROVAL_ID"],
-    #     "confidence": reg_id_conf,
-    #     "block": None,
-    # }
-    # rules_data = {
-    #     "ADDRESSEE": name_rule_data,
-    #     "ADDRESS_LINE_1": ad1_rule_data,
-    #     "ADDRESS_LINE_2": ad2_rule_data,
-    #     "CITY": city_rule_data,
-    #     "STATE": state_rule_data,
-    #     "ZIP_CODE_4": zip_rule_data,
-    #     "REGULATORY_APPROVAL_ID": reg_id_rule_data,
-    # }
-
-    # # Validate business rules
-    # con = Condition(rules_data, rules)
-    # rule_missed, rule_checked = con.check_all()
-    # rule_missed_string = ", ".join(element["message"] for element in rule_missed)
-    # centene_format["RULE_MISSED_COUNT"] = len(rule_missed)
-    # centene_format["RULE_MISSED_STRING"] = rule_missed_string
-
-    # # Save filenames
-    # output_file_name = f"{key[:-4]}.json"
-    # rm_file_name = f"{key[:-4]}-rule-missed.json"
-    # rs_file_name = f"{key[:-4]}-rule-checked.json"
-
-    # # Save data to s3 and return if save was successful or not
-    # status = save_dict_to_s3(centene_format, output_bucket, output_file_name)
-    # # Save rule missed list
-    # s3.Object(output_bucket, rm_file_name).put(Body=json.dumps(rule_missed))
-    # # Save rule satisfied list
-    # s3.Object(output_bucket, rs_file_name).put(Body=json.dumps(rule_checked))
-
-    # # -------Image for A2I--------------------------------------
-    # s3_filename_a2i = f"{key[:-4]}-image-for-A2I.png"
-
-    # # Combine the partial pages where the fields were found
-    # if name_file and reg_id_file:
-    #     name_file_parts = name_file.split("/")
-    #     reg_id_file_parts = reg_id_file.split("/")
-    #     tmp_name_file = "tmp/" + name_file_parts[-1]
-    #     tmp_regid_file = "tmp/" + reg_id_file_parts[-1]
-    #     # Recombine creates an image in tmp called image-for-A2I.png
-    #     # using the top and bottom images where names and resp. codes
-    #     # were found.
-    #     recombine(tmp_name_file, tmp_regid_file)
-
-    #     # We upload that to the correct bucket and prefix
-    #     print(f"s3_filename is {s3_filename_a2i}")
-    #     local_a2i_image_path = "tmp/image-for-A2I.png"
-    #     client.upload_file(local_a2i_image_path, output_bucket, s3_filename_a2i)
-
-    # else:  # CILT
-    #     # upload cilt image to correct bucket with prefix
-
-    #     local_a2i_image_path = "tmp/image-for-A2I.png"
-    #     # upload cilt image
-    #     client.upload_file("tmp/cilt.png", output_bucket, s3_filename_a2i)
-
-    # # -----------------Create A2I labeling job--------------------------
-
-    # # -----------------Clean up------------------------------------------
-    # # Get disk usage of tmp directory
-    # usage = os.statvfs("tmp")
-    # total_space = usage.f_frsize * usage.f_blocks
-    # used_space = usage.f_frsize * (usage.f_blocks - usage.f_bfree)
-    # available_space = usage.f_frsize * usage.f_bavail
-
-    # # Convert to human-readable format
-    # total_space_gb = total_space / (1024**3)
-    # used_space_gb = used_space / (1024**3)
-    # available_space_gb = available_space / (1024**3)
-
-    # # Print the disk usage
-    # print(f"Total Space: {total_space_gb:.2f} GB")
-    # print(f"Used Space: {used_space_gb:.2f} GB")
-    # print(f"Available Space: {available_space_gb:.2f} GB")
-    ################################################################################################
-
+    # Print the disk usage
+    print(f"Total Space: {total_space_gb:.2f} GB")
+    print(f"Used Space: {used_space_gb:.2f} GB")
+    print(f"Available Space: {available_space_gb:.2f} GB")
+    
+    
+    
     # Iterate over all files in the directory
-    for filename in os.listdir("tmp"):
-        # if filename.endswith('.tif'):  # Check if the file ends with ".tif"
-        file_path = os.path.join("tmp", filename)  # Get the full file path
+    for filename in os.listdir('/tmp'): 
+        #if filename.endswith('.tif'):  # Check if the file ends with ".tif"
+        file_path = os.path.join('/tmp', filename)  # Get the full file path
         os.remove(file_path)  # Remove the file
         print(f"Removed file: {filename}")
 
-    # return status, centene_format, rule_missed, rule_checked
-
-
-def get_two_alignment(s1, s2, dummychar="-"):
-    def get_alignment(x, y, alignment):
-        return "".join(dummychar if i is None else x[i] for i, _ in alignment), "".join(
-            dummychar if j is None else y[j] for _, j in alignment
-        )
-
-    aligned_s1, aligned_s2 = get_alignment(s1, s2, needleman_wunsch(s1, s2))
-    return aligned_s1, aligned_s2
-
-
-def recover_from_aligned_candidates(
-    textract_line_confidence,
-    aligned_s1,
-    aligned_s2,
-    aligned_s3,
-    dummychar="-",
-):
-    def get_char_if_not_dummy(ch):
-        return ch if ch != dummychar else ""
-
-    recovered_string = ""
-    for c1, c2, c3 in zip(aligned_s1, aligned_s2, aligned_s3):
-        if c1 == c2:
-            recovered_string += get_char_if_not_dummy(c1)
-        elif c1 == c3:
-            recovered_string += get_char_if_not_dummy(c1)
-        elif c2 == c3:
-            recovered_string += get_char_if_not_dummy(c2)
-        else:
-            # No agreement, first go with Textract (c1) as we know our accuracy level with Textract
-            if c1 != dummychar:
-                recovered_string += c1
-            elif c2 != dummychar:
-                recovered_string += c2
-            else:
-                recovered_string += c3
-
-    new_line_confidence = 0
-    match_proportion = 1
-    for c1, c2, c3 in zip(aligned_s1, aligned_s2, aligned_s3):
-        # If all different, then use textract line confidence
-        if c1 != c2 and c2 != c3 and c1 != c3:
-            # cut confidence boost in half
-            match_proportion *= 1 / 2
-
-        # if all agree, then for that character maintain match proportion
-        elif (c1 == c2) and (c2 == c3) and (c1 == c3):
-            # maintain full confidence boost
-            match_proportion *= 1
-
-        else:  # two of three agree, reduce match proportion to 2/3 previously level
-            # cut confidence boost by 10%
-            match_proportion *= (9) / 10
-    confidence_boost = (100 - textract_line_confidence) * (match_proportion)
-    new_line_confidence = textract_line_confidence + confidence_boost
-
-    return recovered_string, new_line_confidence
-
-
-def needleman_wunsch(x, y):
-    """Run the Needleman-Wunsch algorithm on two sequences.
-
-    x, y -- sequences.
-
-    Code based on pseudocode in Section 3 of:
-
-    Naveed, Tahir; Siddiqui, Imitaz Saeed; Ahmed, Shaftab.
-    "Parallel Needleman-Wunsch Algorithm for Grid." n.d.
-    https://upload.wikimedia.org/wikipedia/en/c/c4/ParallelNeedlemanAlgorithm.pdf
-    """
-    N, M = len(x), len(y)
-    s = lambda a, b: int(a == b)
-
-    DIAG = -1, -1
-    LEFT = -1, 0
-    UP = 0, -1
-
-    # Create tables F and Ptr
-    F = {}
-    Ptr = {}
-
-    F[-1, -1] = 0
-    for i in range(N):
-        F[i, -1] = -i
-    for j in range(M):
-        F[-1, j] = -j
-
-    option_Ptr = DIAG, LEFT, UP
-    for i, j in product(range(N), range(M)):
-        option_F = (
-            F[i - 1, j - 1] + s(x[i], y[j]),
-            F[i - 1, j] - 1,
-            F[i, j - 1] - 1,
-        )
-        F[i, j], Ptr[i, j] = max(zip(option_F, option_Ptr))
-
-    # Work backwards from (N - 1, M - 1) to (0, 0)
-    # to find the best alignment.
-    alignment = deque()
-    i, j = N - 1, M - 1
-    while i >= 0 and j >= 0:
-        direction = Ptr[i, j]
-        if direction == DIAG:
-            element = i, j
-        elif direction == LEFT:
-            element = i, None
-        elif direction == UP:
-            element = None, j
-        alignment.appendleft(element)
-        di, dj = direction
-        i, j = i + di, j + dj
-    while i >= 0:
-        alignment.appendleft((i, None))
-        i -= 1
-    while j >= 0:
-        alignment.appendleft((None, j))
-        j -= 1
-
-    return list(alignment)
-
+    
+    return status, centene_format, rule_missed, rule_checked
+    
 
 def get_two_alignment(
     seq1, seq2, gap_penalty=-1, match_score=1, mismatch_penalty=-5, dummychar="-"
@@ -2000,10 +1751,10 @@ def get_three_alignment(
         match_score=half_match_score,
         mismatch_penalty=half_mismatch_penalty,
         dummychar="-",
-    )[1]
+    )[1]   
     for i in range(rows):
         for k in range(depth):
-            scores[i][0][k] = scores_ik[i][k]
+            scores[i][0][k] =  scores_ik[i][k]
 
     for k in range(depth):
         scores[0][0][k] = k * gap_penalty
@@ -2015,7 +1766,7 @@ def get_three_alignment(
         match_score=half_match_score,
         mismatch_penalty=half_mismatch_penalty,
         dummychar="-",
-    )[1]
+    )[1]   
     for i in range(rows):
         for j in range(cols):
             scores[i][j][0] = scores_ij[i][j]
@@ -2112,287 +1863,54 @@ def get_three_alignment(
 
     alignment = alignments[::-1]
     return get_aligned_word(0), get_aligned_word(1), get_aligned_word(2)
+    
 
+#----------------recover-a-string-from-three-candidates--------    
+def recover_from_aligned_candidates(
+    textract_line_confidence,
+    aligned_s1,
+    aligned_s2,
+    aligned_s3,
+    dummychar="-",
+):
+    def get_char_if_not_dummy(ch):
+        return ch if ch != dummychar else ""
 
-from itertools import product
-from collections import deque
+    recovered_string = ""
+    for c1, c2, c3 in zip(aligned_s1, aligned_s2, aligned_s3):
+        if c1 == c2:
+            recovered_string += get_char_if_not_dummy(c1)
+        elif c1 == c3:
+            recovered_string += get_char_if_not_dummy(c1)
+        elif c2 == c3:
+            recovered_string += get_char_if_not_dummy(c2)
+        else:
+            # No agreement, first go with Textract (c1) as we know our accuracy level with Textract
+            if c1 != dummychar:
+                recovered_string += c1
+            elif c2 != dummychar:
+                recovered_string += c2
+            else:
+                recovered_string += c3
 
+    new_line_confidence = 0
+    match_proportion = 1
+    for c1, c2, c3 in zip(aligned_s1, aligned_s2, aligned_s3):
+        # If all different, then use textract line confidence
+        if c1 != c2 and c2 != c3 and c1 != c3:
+            # cut confidence boost in half
+            match_proportion *= 1 / 2
 
-def needleman_wunsch(x, y, gap: str = "-"):
-    """Run the Needleman-Wunsch algorithm on two sequences.
+        # if all agree, then for that character maintain match proportion
+        elif (c1 == c2) and (c2 == c3) and (c1 == c3):
+            # maintain full confidence boost
+            match_proportion *= 1
 
-    x, y -- sequences.
+        else:  # two of three agree, reduce match proportion to 2/3 previously level
+            # cut confidence boost by 10%
+            match_proportion *= (9) / 10
+    confidence_boost = (100 - textract_line_confidence) * (match_proportion)
+    new_line_confidence = textract_line_confidence + confidence_boost
 
-    Code based on pseudocode in Section 3 of:
+    return recovered_string, new_line_confidence
 
-    Naveed, Tahir; Siddiqui, Imitaz Saeed; Ahmed, Shaftab.
-    "Parallel Needleman-Wunsch Algorithm for Grid." n.d.
-    https://upload.wikimedia.org/wikipedia/en/c/c4/ParallelNeedlemanAlgorithm.pdf
-    """
-    N, M = len(x), len(y)
-    s = lambda a, b: int(a == b)
-
-    DIAG = -1, -1
-    LEFT = -1, 0
-    UP = 0, -1
-
-    # Create tables F and Ptr
-    F = {}
-    Ptr = {}
-
-    F[-1, -1] = 0
-    for i in range(N):
-        F[i, -1] = -i
-    for j in range(M):
-        F[-1, j] = -j
-
-    option_Ptr = DIAG, LEFT, UP
-    for i, j in product(range(N), range(M)):
-        option_F = (
-            F[i - 1, j - 1] + s(x[i], y[j]),
-            F[i - 1, j] - 1,
-            F[i, j - 1] - 1,
-        )
-        F[i, j], Ptr[i, j] = max(zip(option_F, option_Ptr))
-
-    # Work backwards from (N - 1, M - 1) to (0, 0)
-    # to find the best alignment.
-    alignment = deque()
-    i, j = N - 1, M - 1
-    while i >= 0 and j >= 0:
-        direction = Ptr[i, j]
-        if direction == DIAG:
-            element = i, j
-        elif direction == LEFT:
-            element = i, None
-        elif direction == UP:
-            element = None, j
-        alignment.appendleft(element)
-        di, dj = direction
-        i, j = i + di, j + dj
-    while i >= 0:
-        alignment.appendleft((i, None))
-        i -= 1
-    while j >= 0:
-        alignment.appendleft((None, j))
-        j -= 1
-    aligned_x = "".join(gap if i is None else x[i] for i, _ in alignment)
-    aligned_y = "".join(gap if j is None else y[j] for _, j in alignment)
-    return list(aligned_x), list(aligned_y)
-
-
-def align(s1, s2, s3):
-    # align s1 to s2 and to s3
-    aligned_s1_12, _ = needleman_wunsch(s1, s2, gap="+")
-    aligned_s1_13, _ = needleman_wunsch(s1, s3, gap="+")
-    # align s2 to s1 and s3
-    aligned_s2_21, _ = needleman_wunsch(s2, s1, gap="+")
-    aligned_s2_23, _ = needleman_wunsch(s2, s3, gap="+")
-    # align s3 to s1 and s2
-    aligned_s3_31, _ = needleman_wunsch(s3, s1, gap="+")
-    aligned_s3_32, _ = needleman_wunsch(s3, s2, gap="+")
-
-    # Next, 'self-align', that is, align the two distinct alignments we obtained above for each string
-    # self-align s1
-    self_aligned_s1, _ = needleman_wunsch(
-        "".join(aligned_s1_12), "".join(aligned_s1_13)
-    )
-    # self-align s2
-    self_aligned_s2, _ = needleman_wunsch(
-        "".join(aligned_s2_21), "".join(aligned_s2_23)
-    )
-    # self-align s3
-    self_aligned_s3, _ = needleman_wunsch(
-        "".join(aligned_s3_31), "".join(aligned_s3_32)
-    )
-
-    # there will be a mix of '+' and '-' characters, we replace all '+' with '-' so we can continue using previous code downstream
-    self_aligned_s1 = "".join(self_aligned_s1).replace("+", "-")
-    self_aligned_s2 = "".join(self_aligned_s2).replace("+", "-")
-    self_aligned_s3 = "".join(self_aligned_s3).replace("+", "-")
-    return self_aligned_s1, self_aligned_s2, self_aligned_s3
-
-
-# Example usage
-# sequence1 = "NA2WCME.OB79520E_.2022"
-# sequence2 = "NA2WCMEOB79520E_2022"
-# sequence3 = "NA.2WCMEOB79520E_2022"
-
-# s1, s2, s3 = get_three_alignment(sequence1, sequence2, sequence3)
-
-# print(s1)
-# print(s2)
-# print(s3)
-
-
-def get_event(tif_key):
-    event = {
-        "Records": [
-            {
-                "eventVersion": "2.1",
-                "eventSource": "aws:s3",
-                "awsRegion": "us-east-1",
-                "eventTime": "2019-09-03T19:37:27.192Z",
-                "eventName": "ObjectCreated:Put",
-                "userIdentity": {"principalId": "AWS:AIDAINPONIXQXHT3IKHL2"},
-                "requestParameters": {"sourceIPAddress": "205.255.255.255"},
-                "responseElements": {
-                    "x-amz-request-id": "D82B88E5F771F645",
-                    "x-amz-id-2": "vlR7PnpV2Ce81l0PRw6jlUpck7Jo5ZsQjryTjKlc5aLWGVHPZLj5NeC6qMa0emYBDXOo6QBU0Wo=",
-                },
-                "s3": {
-                    "s3SchemaVersion": "1.0",
-                    "configurationId": "828aa6fc-f7b5-4305-8584-487c791949c1",
-                    "bucket": {
-                        "name": test_bucket_name,
-                        "ownerIdentity": {"principalId": "A3I5XTEXAMAI3E"},
-                        "arn": "arn:aws:s3:::lambda-artifacts-deafc19498e3f2df",
-                    },
-                    "object": {
-                        "key": tif_key,
-                        "size": 1305107,
-                        "eTag": "b21b84d653bb07b05b1e6b33684dc11b",
-                        "sequencer": "0C0F6F405D6ED209E1",
-                    },
-                },
-            }
-        ]
-    }
-    return event
-
-
-# INPUT SETUP
-########################################################################################################################
-# tif_keys_list = [f"real-doc/C00194251{i}.tiff" for i in range(10) if i != 3]
-
-
-tif_keys_list = sorted(
-    [f"real-doc/{file_name}" for file_name in os.listdir("./problematic_samples/070323-batch")]
-)
-
-
-events = [get_event(tif_key) for tif_key in tif_keys_list if tif_key[-1] in {"f", "F"}]
-
-# output_suffix = (
-#     "idp-textract-prod10525-target 06292023 CUR6470-01_4010_20230628_0001157189"
-# )
-
-output_suffix = "centenetransfer Centenetesting"
-########################################################################################################################
-extraction_log_df = pd.DataFrame()
-
-dummy_extration_dict = {}
-dummy_extration_dict["app_code_type"] = None
-dummy_extration_dict["twenty_code_type"] = None
-dummy_extration_dict["textract_conf_app_code"] = None
-dummy_extration_dict["textract_conf_twenty_code"] = None
-dummy_extration_dict["tesseract_conf_app_code"] = None
-dummy_extration_dict["tesseract_conf_twenty_code"] = None
-dummy_extration_dict["doc"] = None
-dummy_extration_dict["RegId"] = None
-dummy_extration_dict["RegIdConf"] = None
-dummy_extration_dict["app_code_textract"] = None
-dummy_extration_dict["app_code_tesseract"] = None
-dummy_extration_dict["app_code_table_lookup"] = None
-dummy_extration_dict["twenty_code_textract"] = None
-dummy_extration_dict["twenty_code_tesseract"] = None
-dummy_extration_dict["twenty_code_table_lookup"] = None
-dummy_extration_dict["app_code_fallback"] = None
-dummy_extration_dict["twenty_code_fallback"] = None
-dummy_extration_dict["approval_back_up"] = None
-dummy_extration_dict["twenty_back_up"] = None
-dummy_extration_dict["history"] = None
-
-extraction_log_df = pd.concat(
-    [extraction_log_df, pd.DataFrame([dummy_extration_dict])],
-    ignore_index=True,
-)
-
-# print(
-#     "\n".join(
-#         get_three_alignment(
-#             "NA3WCMEOB00186E 0000", "NA3WCMEOBO00186E_0000",  "NA3WCMEOB00186E_0000"
-#         )
-#     )
-# )
-
-
-# string, score = recover_from_aligned_candidates(
-#     70,
-#     *get_three_alignment(
-#             "NA3WCMEOB00186E 0000", "NA3WCMEOBO00186E_0000",  "NA3WCMEOB00186E_0000"
-#         )
-# )
-
-# print(string)
-
-if __name__ == "__main__":
-    # m = first_match_info = extractOne(
-    #             '___NA2PDGLTR11297E_0000_   ',
-    #             twenty_digit_codes,
-    #             scorer=ratio,
-    #             score_cutoff=80,
-    #             processor=default_process,
-    #         )
-    # print(m[0])
-    # print(m[1])
-    for event in events:
-        lambda_handler(event, None)
-    extraction_log_df.to_csv(f"outputs/extraction_log_{output_suffix}.csv")
-#     for i in range(0, 1):
-#         for j in range(0, 1):
-#             for k in range(0, 1):
-#                 string, score = recover_from_aligned_candidates(
-#                     70,
-#                     *get_three_alignment(
-#                         "Y0020_WCM_100186E_C INTERNAL APPROVED 07252022",
-#                         "Y0020_WCM_100186E_ C INTERNAL SMAL APPROVED 07252022",
-#                         "Y0020 WCM 100186E_C INTERNAL APPROVED 07252022",
-#                         gap_penalty=-10,
-#                         half_match_score=-5,
-#                     ),
-#                 )
-#                 print(f"{string} with {score}")
-
-
-# print(
-#     "\n".join(
-#         get_three_alignment(
-#             "Y0020_WCM_100186E_C INTERNAL APPROVED 07252022",
-#             "Y0020_WCM_100186E_ C INTERNAL SMAL APPROVED 07252022",
-#             "Y0020_WCM_100186E_C INTERNAL APPROVED 07252022",
-#             gap_penalty=-10,
-#             half_match_score=-5,
-#         )
-#     )
-# )
-# import random
-
-
-# def sample_across_batches(bucket_name, folder_path, num_files=2, local_folder='sample', s3_client=client):
-#     # Retrieve the list of subfolders in the specified folder
-#     response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder_path, Delimiter='/')
-#     subfolders = [prefix['Prefix'] for prefix in response.get('CommonPrefixes', [])]
-
-#     # Sample uniformly at random from the subfolders to download files from
-#     selected_subfolders = random.choices(subfolders, k=num_files)
-
-#     # Create the local target folder if it does not exist
-#     if not os.path.isdir(local_folder):
-#         os.mkdir(local_folder)
-
-#     # Download the files
-#     for subfolder in selected_subfolders:
-#         # Retrieve the list of objects (files) in the subfolder
-#         response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=subfolder)
-#         files = [file['Key'] for file in response.get('Contents', [])]
-
-#         # Sample a file uniformly at random
-#         file_to_download = random.choice(files[1:])
-
-#         # Download the selected file
-#         local_file_name = '-'.join(file_to_download.split('/')[-2:])
-#         s3_client.download_file(bucket_name, file_to_download, os.path.join(local_folder, local_file_name))
-
-# if __name__ == "__main__":
-#     sample_across_batches('centene-test', 'real-doc/')
