@@ -45,7 +45,7 @@ approval_re = re.compile(
 # approval_re = re.compile(r'[A-Z][A-Z0-9]+[_ ].*\d\d\d\d\d\d\d\d')
 # twenty_re_old = re.compile(r'[A-Z][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]+[ _.A-Z]\d{3,4}')
 twenty_re = re.compile(
-    r"[A-Z][A-Z][OS0-9][A-Z][A-Z][A-Z][A-Z0-9][A-Z0-9][A-Z0-9]+[ _.][A-Z\d]{3,4}$"
+    r"[A-Z][A-Z][OSC0-9][A-Z][A-Z][A-Z][A-Z0-9][A-Z0-9][A-Z0-9]+[ _.][A-Z\d]{3,4}$"
 )
 
 
@@ -220,6 +220,28 @@ def extract_top(input_path, output_path):
         print(f"Image extraction failed: {e}")
 
 
+def fix_orientation(file):
+    try:
+        image = pillow_image.open(file)
+    except Exception as e:
+        print(f"Unable to open file: {e}")   
+        return
+    newdata=pytesseract.image_to_osd(image, output_type=pytesseract.Output.DICT)
+    if newdata['rotate']:
+        command = [
+            "convert",
+            file,
+            "-rotate",
+            str(newdata['rotate']),
+            file,
+        ]
+        try:
+            subprocess.run(command, check=True)
+            print("Page rotated successfully.")
+        except subprocess.CalledProcessError as e:
+            print(f"Page rotation failed: {e}")
+
+
 def split_into_pages_top_and_bottom(filepath):
     # given the filepath of the original multipage .TIF file
     # we split it into pages and for each page, further split
@@ -227,18 +249,21 @@ def split_into_pages_top_and_bottom(filepath):
     split_tif(filepath)
     # iterate over pages
     files = os.listdir("tmp")
-    for file in files:
-        if "-" and ".tif" in file:
-            last_dot_index = get_last_dot_index(filepath)
-            print("Splitting the following page into the two files below:")
-            bottom_filename = (
-                f"tmp/{file[:last_dot_index]}-bottom{file[last_dot_index:]}"
-            )
-            print(bottom_filename)
-            top_filename = f"tmp/{file[:last_dot_index]}-top{file[last_dot_index:]}"
-            print(top_filename)
-            extract_bottom("tmp/" + file, bottom_filename)
-            extract_top("tmp/" + file, top_filename)
+    files = [file for file in files if '-' and '.tif' in file]
+    files.sort()
+    for file in files[:4]:
+        fix_orientation(f'tmp/{file}')
+        last_dot_index = get_last_dot_index(filepath)
+        print("Splitting the following page into the two files below:")
+        bottom_filename = (
+            f"tmp/{file[:last_dot_index]}-bottom{file[last_dot_index:]}"
+        )
+        print(bottom_filename)
+        top_filename = f"tmp/{file[:last_dot_index]}-top{file[last_dot_index:]}"
+        print(top_filename)
+        extract_bottom("tmp/" + file, bottom_filename)
+        extract_top("tmp/" + file, top_filename)
+
 
 
 def add_border(filepath):
@@ -369,11 +394,15 @@ def get_tesseract_text_with_confidence(file, cfg):
     :cfg: config string for tesseract
     :return: extracted_text, confidence
     """
-    data = pytesseract.image_to_data(
-        pillow_image.open(file),
-        config=cfg,
-        output_type=pytesseract.Output.DICT,
-    )
+    try:
+        data = pytesseract.image_to_data(
+            pillow_image.open(file),
+            config=cfg,
+            output_type=pytesseract.Output.DICT,
+        )
+    except Exception as e:
+        print(f"Code extraction failed: {e}")   
+        return '', 0
     return get_tesseract_text_from_data_with_confidence(data)
 
 
@@ -1773,16 +1802,6 @@ def lambda_handler(event, context):
     # return status, centene_format, rule_missed, rule_checked
 
 
-def get_two_alignment(s1, s2, dummychar="-"):
-    def get_alignment(x, y, alignment):
-        return "".join(dummychar if i is None else x[i] for i, _ in alignment), "".join(
-            dummychar if j is None else y[j] for _, j in alignment
-        )
-
-    aligned_s1, aligned_s2 = get_alignment(s1, s2, needleman_wunsch(s1, s2))
-    return aligned_s1, aligned_s2
-
-
 def recover_from_aligned_candidates(
     textract_line_confidence,
     aligned_s1,
@@ -2114,103 +2133,6 @@ def get_three_alignment(
     return get_aligned_word(0), get_aligned_word(1), get_aligned_word(2)
 
 
-from itertools import product
-from collections import deque
-
-
-def needleman_wunsch(x, y, gap: str = "-"):
-    """Run the Needleman-Wunsch algorithm on two sequences.
-
-    x, y -- sequences.
-
-    Code based on pseudocode in Section 3 of:
-
-    Naveed, Tahir; Siddiqui, Imitaz Saeed; Ahmed, Shaftab.
-    "Parallel Needleman-Wunsch Algorithm for Grid." n.d.
-    https://upload.wikimedia.org/wikipedia/en/c/c4/ParallelNeedlemanAlgorithm.pdf
-    """
-    N, M = len(x), len(y)
-    s = lambda a, b: int(a == b)
-
-    DIAG = -1, -1
-    LEFT = -1, 0
-    UP = 0, -1
-
-    # Create tables F and Ptr
-    F = {}
-    Ptr = {}
-
-    F[-1, -1] = 0
-    for i in range(N):
-        F[i, -1] = -i
-    for j in range(M):
-        F[-1, j] = -j
-
-    option_Ptr = DIAG, LEFT, UP
-    for i, j in product(range(N), range(M)):
-        option_F = (
-            F[i - 1, j - 1] + s(x[i], y[j]),
-            F[i - 1, j] - 1,
-            F[i, j - 1] - 1,
-        )
-        F[i, j], Ptr[i, j] = max(zip(option_F, option_Ptr))
-
-    # Work backwards from (N - 1, M - 1) to (0, 0)
-    # to find the best alignment.
-    alignment = deque()
-    i, j = N - 1, M - 1
-    while i >= 0 and j >= 0:
-        direction = Ptr[i, j]
-        if direction == DIAG:
-            element = i, j
-        elif direction == LEFT:
-            element = i, None
-        elif direction == UP:
-            element = None, j
-        alignment.appendleft(element)
-        di, dj = direction
-        i, j = i + di, j + dj
-    while i >= 0:
-        alignment.appendleft((i, None))
-        i -= 1
-    while j >= 0:
-        alignment.appendleft((None, j))
-        j -= 1
-    aligned_x = "".join(gap if i is None else x[i] for i, _ in alignment)
-    aligned_y = "".join(gap if j is None else y[j] for _, j in alignment)
-    return list(aligned_x), list(aligned_y)
-
-
-def align(s1, s2, s3):
-    # align s1 to s2 and to s3
-    aligned_s1_12, _ = needleman_wunsch(s1, s2, gap="+")
-    aligned_s1_13, _ = needleman_wunsch(s1, s3, gap="+")
-    # align s2 to s1 and s3
-    aligned_s2_21, _ = needleman_wunsch(s2, s1, gap="+")
-    aligned_s2_23, _ = needleman_wunsch(s2, s3, gap="+")
-    # align s3 to s1 and s2
-    aligned_s3_31, _ = needleman_wunsch(s3, s1, gap="+")
-    aligned_s3_32, _ = needleman_wunsch(s3, s2, gap="+")
-
-    # Next, 'self-align', that is, align the two distinct alignments we obtained above for each string
-    # self-align s1
-    self_aligned_s1, _ = needleman_wunsch(
-        "".join(aligned_s1_12), "".join(aligned_s1_13)
-    )
-    # self-align s2
-    self_aligned_s2, _ = needleman_wunsch(
-        "".join(aligned_s2_21), "".join(aligned_s2_23)
-    )
-    # self-align s3
-    self_aligned_s3, _ = needleman_wunsch(
-        "".join(aligned_s3_31), "".join(aligned_s3_32)
-    )
-
-    # there will be a mix of '+' and '-' characters, we replace all '+' with '-' so we can continue using previous code downstream
-    self_aligned_s1 = "".join(self_aligned_s1).replace("+", "-")
-    self_aligned_s2 = "".join(self_aligned_s2).replace("+", "-")
-    self_aligned_s3 = "".join(self_aligned_s3).replace("+", "-")
-    return self_aligned_s1, self_aligned_s2, self_aligned_s3
 
 
 # Example usage
@@ -2267,7 +2189,7 @@ def get_event(tif_key):
 
 
 tif_keys_list = sorted(
-    [f"real-doc/{file_name}" for file_name in os.listdir("./problematic_samples/070323-batch")]
+    [f"real-doc/{file_name}" for file_name in os.listdir("./070723sample")]
 )
 
 
@@ -2336,7 +2258,7 @@ if __name__ == "__main__":
     #         )
     # print(m[0])
     # print(m[1])
-    for event in events:
+    for event in events[-19:-18]:
         lambda_handler(event, None)
     extraction_log_df.to_csv(f"outputs/extraction_log_{output_suffix}.csv")
 #     for i in range(0, 1):

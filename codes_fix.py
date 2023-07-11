@@ -1,7 +1,7 @@
 import json
 
 
-with open('docs/twenty_codes.json', 'r') as f:
+with open('docs/twenty_codes-sorted.json', 'r') as f:
     codes = f.read()
 
 approval_codes = json.loads(codes)
@@ -16,5 +16,5 @@ approval_codes.sort()
 
 
 
-with open('docs/twenty_codes-sorted2.json', 'w') as f:
+with open('docs/twenty_codes-sorted.json', 'w') as f:
     f.write(json.dumps(approval_codes))
