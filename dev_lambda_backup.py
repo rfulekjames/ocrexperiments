@@ -184,7 +184,7 @@ def get_query_results(ref_id, response_json):
     return None
 
 
-def parse_response_to_json(response_json):
+def parse_response_to_json(response_json, query_output):
     """Update query_output dictionary above with response information
     in format required for Condition to check it
     Input: response JSON from textract API
@@ -200,7 +200,6 @@ def parse_response_to_json(response_json):
                 query_output[q_alias] = results
 
     return query_output
-
 
 def save_dict_to_s3(dict_obj, bucket_name, file_name):
     """Saves dict_obj json key value pairs obtained from the queries,
@@ -218,34 +217,18 @@ def save_dict_to_s3(dict_obj, bucket_name, file_name):
     return status
 
 
-# --------------- Dictionaries for data storage ------------------
-query_output = {
-    "ADDRESSEE": None,
-    "STREET_ADDRESS": None,
-    "CITY": None,
-    "STATE": None,
-    "ZIP_CODE_4": None,
-}
-# Centene fields format for saving to S3
-centene_format = {
-    "RICOH_DCN": None,
-    "REGULATORY_APPROVAL_ID": None,
-    "ADDRESSEE": None,
-    "ADDRESS_LINE_1": None,
-    "ADDRESS_LINE_2": None,
-    "CITY": None,
-    "STATE": None,
-    "ZIP_CODE_4": None,
-    "BATCH": None,
-    "BATCH_PREFIX": None,
-}
-
-
 # --------------- Main handler ------------------
 def lambda_handler(event, context):
     """Demonstrates S3 trigger that uses
     textract APIs to detect text, query text in S3 Object.
     """
+
+    for filename in os.listdir(tmp_folder):
+        # if filename.endswith('.tif'):  # Check if the file ends with ".tif"
+        file_path = os.path.join("tmp", filename)  # Get the full file path
+        os.remove(file_path)  # Remove the file
+        print(f"Removed file: {filename}")
+
     print("Received event: " + json.dumps(event, indent=2))
 
     # Get the object from the event
@@ -270,23 +253,83 @@ def lambda_handler(event, context):
         print(f"File downloaded successfully from S3.")
     except Exception as e:
         print(f"Error downloading file from S3: {e}")
-
+        
+    # given the local_file_name of the original multipage .TIF file
+    # we split it into pages and for each page, further split
+    # into top and bottom.
+    split_tif(local_file_name)
 
     full_response = False
     number_of_pages_to_check = 1
-    # first check the first 4 pages only 
+    # first check the first number_of_pages_to_check pages only 
     # if this didn't resulted in a full response to the whole document
-    # usually the required answer is contained in the first 4 pages
-    while not full_response and number_of_pages_to_check == 1:
-        status, centene_format, rule_missed, rule_checked, full_response = \
-            get_response(bucket, key, local_file_name, 0, number_of_pages_to_check)
-        number_of_pages_to_check = -1
+    # usually the required answer is contained in the first 2 pages
+    # number_of_pages_to_check = -1 means check all pages
+    while not full_response and number_of_pages_to_check >= -1:
+        
+        # --------------- Dictionaries for data storage ------------------
+        query_output = {
+            "ADDRESSEE": None,
+            "STREET_ADDRESS": None,
+            "CITY": None,
+            "STATE": None,
+            "ZIP_CODE_4": None,
+        }
 
+        
+        # Centene fields format for saving to S3
+        centene_format = {
+            "RICOH_DCN": None,
+            "REGULATORY_APPROVAL_ID": None,
+            "ADDRESSEE": None,
+            "ADDRESS_LINE_1": None,
+            "ADDRESS_LINE_2": None,
+            "CITY": None,
+            "STATE": None,
+            "ZIP_CODE_4": None,
+            "BATCH": None,
+            "BATCH_PREFIX": None,
+        }
+            
+        
+        _, status, rule_missed, rule_checked, full_response = \
+            get_response(bucket, key, local_file_name, 0, number_of_pages_to_check, centene_format, query_output)
+        number_of_pages_to_check = -1 if number_of_pages_to_check > -1 else -2
+        
+
+    # -----------------Clean up------------------------------------------
+    # Get disk usage of /tmp directory
+    usage = os.statvfs(tmp_folder)
+    total_space = usage.f_frsize * usage.f_blocks
+    used_space = usage.f_frsize * (usage.f_blocks - usage.f_bfree)
+    available_space = usage.f_frsize * usage.f_bavail
+
+    # Convert to human-readable format
+    total_space_gb = total_space / (1024**3)
+    used_space_gb = used_space / (1024**3)
+    available_space_gb = available_space / (1024**3)
+
+    # Print the disk usage
+    print(f"Total Space: {total_space_gb:.2f} GB")
+    print(f"Used Space: {used_space_gb:.2f} GB")
+    print(f"Available Space: {available_space_gb:.2f} GB")
+
+
+    # Iterate over all files in the directory
+    for filename in os.listdir(tmp_folder):
+        # if filename.endswith('.tif'):  # Check if the file ends with ".tif"
+        file_path = os.path.join(tmp_folder, filename)  # Get the full file path
+        os.remove(file_path)  # Remove the file
+        print(f"Removed file: {filename}")
+        
+
+    print(json.dumps(centene_format))
     return status, centene_format, rule_missed, rule_checked 
 
 
-def get_response(bucket, key, local_file_name, lo_page, hi_page):
-    bottom_response, top_response = False, False
+def get_response(bucket, key, local_file_name, lo_page, hi_page, centene_format, query_output):
+    reg_id_code_found = False
+    non_reg_id_data_found = False
     split_into_pages_top_and_bottom(local_file_name, lo_page, hi_page)
 
     # directory = tmp_folder  # Replace with your directory path
@@ -299,10 +342,10 @@ def get_response(bucket, key, local_file_name, lo_page, hi_page):
     parts = key.split("/")
 
     # Get the text after the final '/'
-    ricoh_dcn = parts[-1]
+    # ricoh_dcn = parts[-1]
 
     ##########################################################
-    # centene_format['RICOH_DCN'] = parts[-1][:-4] #strip .T
+    centene_format['RICOH_DCN'] = parts[-1][:-4] #strip .T
     # centene_format['BATCH'] = parts[-2]
     # centene_format['BATCH_PREFIX'] = parts[-3]
     ##########################################################
@@ -377,7 +420,7 @@ def get_response(bucket, key, local_file_name, lo_page, hi_page):
                 reg_id_file = file
 
                 centene_format["REGULATORY_APPROVAL_ID"] = reg_id
-                bottom_response = True
+                reg_id_code_found = True
                 break
 
     # In case no name or no regid found, make sure regid blank
@@ -415,10 +458,11 @@ def get_response(bucket, key, local_file_name, lo_page, hi_page):
             raise e
         if query_response:
             # Store json of parsed response of first page
-            query_data = parse_response_to_json(query_response)
+            query_data = parse_response_to_json(query_response, query_output)
 
             # Check if query name available
             if query_data["ADDRESSEE"]:
+                non_reg_id_data_found = True
                 print(f"Name found on {file}")
                 name_file = file
                 name = query_data["ADDRESSEE"]["value"]
@@ -472,7 +516,6 @@ def get_response(bucket, key, local_file_name, lo_page, hi_page):
                     centene_format["STATE"] = state
                     centene_format["ZIP_CODE_4"] = zip_code
 
-                top_response = True
                 break  # break out of loop
 
     # Finally, update the query_data with new confidence values
@@ -531,33 +574,8 @@ def get_response(bucket, key, local_file_name, lo_page, hi_page):
             os.path.join(tmp_folder, "cilt.png"), output_bucket, s3_filename_a2i
         )
 
-    # -----------------Create A2I labeling job--------------------------
+    return centene_format, status, rule_missed, rule_checked, non_reg_id_data_found and reg_id_code_found
 
-    # -----------------Clean up------------------------------------------
-    # Get disk usage of /tmp directory
-    usage = os.statvfs(tmp_folder)
-    total_space = usage.f_frsize * usage.f_blocks
-    used_space = usage.f_frsize * (usage.f_blocks - usage.f_bfree)
-    available_space = usage.f_frsize * usage.f_bavail
-
-    # Convert to human-readable format
-    total_space_gb = total_space / (1024**3)
-    used_space_gb = used_space / (1024**3)
-    available_space_gb = available_space / (1024**3)
-
-    # Print the disk usage
-    print(f"Total Space: {total_space_gb:.2f} GB")
-    print(f"Used Space: {used_space_gb:.2f} GB")
-    print(f"Available Space: {available_space_gb:.2f} GB")
-
-    # Iterate over all files in the directory
-    for filename in os.listdir(tmp_folder):
-        # if filename.endswith('.tif'):  # Check if the file ends with ".tif"
-        file_path = os.path.join(tmp_folder, filename)  # Get the full file path
-        os.remove(file_path)  # Remove the file
-        print(f"Removed file: {filename}")
-
-    return status, centene_format, rule_missed, rule_checked, top_response and bottom_response
 
 
 def get_event(tif_key):
@@ -602,12 +620,12 @@ def get_event(tif_key):
 
 
 tif_keys_list = sorted(
-    [f"real-doc/{file_name}" for file_name in os.listdir("./problematic_samples/071123")]
+    [f"real-doc/{file_name}" for file_name in os.listdir("./problematic_samples/072423")]
 )
 
 
 events = [get_event(tif_key) for tif_key in tif_keys_list if tif_key[-1] in {"f", "F"}]
 
 if __name__ == "__main__":
-    for event in events[1:]:
+    for event in events[:1]:
         lambda_handler(event, None)

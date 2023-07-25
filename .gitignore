@@ -8,3 +8,7 @@ sampled_docs
 
 070723
 070723sample
+
+outputs
+
+**/__pycache__/**

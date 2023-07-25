@@ -110,18 +110,12 @@ def fix_orientation(file):
 
 
 def split_into_pages_top_and_bottom(filepath, lo_page, hi_page):
-    # given the filepath of the original multipage .TIF file
-    # we split it into pages and for each page, further split
-    # into top and bottom.
-    split_tif(filepath)
     # iterate over pages
+    last_dot_index = get_last_dot_index(filepath)
     files = os.listdir(tmp_folder)
     files = [file for file in files if "-" and ".tif" in file]
     files.sort()
     for file in files[lo_page: len(files) if hi_page == -1 else hi_page]:
-        fix_orientation(os.path.join(tmp_folder, file))
-        last_dot_index = get_last_dot_index(filepath)
-        print("Splitting the following page into the two files below:")
         bottom_filename = os.path.join(
             tmp_folder, f"{file[:last_dot_index]}-bottom{file[last_dot_index:]}"
         )
@@ -130,8 +124,15 @@ def split_into_pages_top_and_bottom(filepath, lo_page, hi_page):
             tmp_folder, f"{file[:last_dot_index]}-top{file[last_dot_index:]}"
         )
         print(top_filename)
-        extract_bottom(os.path.join(tmp_folder, file), bottom_filename)
-        extract_top(os.path.join(tmp_folder, file), top_filename)
+        
+        if os.path.isfile(bottom_filename) and os.path.isfile(top_filename):
+            continue
+        
+        page_filepath = os.path.join(tmp_folder, file)
+        fix_orientation(page_filepath)
+        print("Splitting the following page into the two files below:")
+        extract_bottom(page_filepath, bottom_filename)
+        extract_top(page_filepath, top_filename)
 
 
 def add_border(filepath):
@@ -183,3 +184,4 @@ def recombine(top_path, bottom_path):
         top_path[: get_last_dot_index(top_path)] + "-border.png"
     )  # Remove the intermediate files
     os.remove(bottom_path[: get_last_dot_index(bottom_path)] + "-border.png")
+    
