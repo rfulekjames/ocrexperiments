@@ -5,64 +5,65 @@ import re
 
 # confidence_threshold = 101 #For manual verification of all docs
 confidence_threshold = 95  # cutoff for automatic verification
-rules = [
-    {
-        "description": f"ADDRESSEE confidence score should be greater than or equal to {confidence_threshold}",
-        "field_name": "ADDRESSEE",
-        "field_name_regex": None,  # support Regex: '_confidence$',
-        "condition_category": "Confidence",
-        "condition_type": "ConfidenceThreshold",
-        "condition_setting": confidence_threshold,
-    },
-    {
-        "description": f"ADDRESS_LINE_1 confidence score should be greater than or equal to {confidence_threshold}",
-        "field_name": "ADDRESS_LINE_1",
-        "field_name_regex": None,  # support Regex: '_confidence$',
-        "condition_category": "Confidence",
-        "condition_type": "ConfidenceThreshold",
-        "condition_setting": confidence_threshold,
-    },
-    {
-        "description": f"ADDRESS_LINE_2 confidence score should be greater than or equal to {confidence_threshold}",
-        "field_name": "ADDRESS_LINE_2",
-        "field_name_regex": None,  # support Regex: '_confidence$',
-        "condition_category": "Confidence",
-        "condition_type": "ConfidenceThreshold",
-        "condition_setting": confidence_threshold,
-    },
-    {
-        "description": f"CITY confidence score should be greater than or equal to {confidence_threshold}",
-        "field_name": "CITY",
-        "field_name_regex": None,  # support Regex: '_confidence$',
-        "condition_category": "Confidence",
-        "condition_type": "ConfidenceThreshold",
-        "condition_setting": confidence_threshold,
-    },
-    {
-        "description": f"STATE confidence score should be greater than or equal to {confidence_threshold}",
-        "field_name": "STATE",
-        "field_name_regex": None,  # support Regex: '_confidence$',
-        "condition_category": "Confidence",
-        "condition_type": "ConfidenceThreshold",
-        "condition_setting": confidence_threshold,
-    },
-    {
-        "description": f"ZIP_CODE_4 confidence score should be greater than or equal to {confidence_threshold}",
-        "field_name": "ZIP_CODE_4",
-        "field_name_regex": None,  # support Regex: '_confidence$',
-        "condition_category": "Confidence",
-        "condition_type": "ConfidenceThreshold",
-        "condition_setting": confidence_threshold,
-    },
-    {
-        "description": f"REGULATORY_APPROVAL_ID confidence score should be greater than or equal to {confidence_threshold}",
-        "field_name": "REGULATORY_APPROVAL_ID",
-        "field_name_regex": None,  # support Regex: '_confidence$',
-        "condition_category": "Confidence",
-        "condition_type": "ConfidenceThreshold",
-        "condition_setting": confidence_threshold,
-    },
-]
+def get_rules_template():
+    return [
+        {
+            "description": f"ADDRESSEE confidence score should be greater than or equal to {confidence_threshold}",
+            "field_name": "ADDRESSEE",
+            "field_name_regex": None,  # support Regex: '_confidence$',
+            "condition_category": "Confidence",
+            "condition_type": "ConfidenceThreshold",
+            "condition_setting": confidence_threshold,
+        },
+        {
+            "description": f"ADDRESS_LINE_1 confidence score should be greater than or equal to {confidence_threshold}",
+            "field_name": "ADDRESS_LINE_1",
+            "field_name_regex": None,  # support Regex: '_confidence$',
+            "condition_category": "Confidence",
+            "condition_type": "ConfidenceThreshold",
+            "condition_setting": confidence_threshold,
+        },
+        {
+            "description": f"ADDRESS_LINE_2 confidence score should be greater than or equal to {confidence_threshold}",
+            "field_name": "ADDRESS_LINE_2",
+            "field_name_regex": None,  # support Regex: '_confidence$',
+            "condition_category": "Confidence",
+            "condition_type": "ConfidenceThreshold",
+            "condition_setting": confidence_threshold,
+        },
+        {
+            "description": f"CITY confidence score should be greater than or equal to {confidence_threshold}",
+            "field_name": "CITY",
+            "field_name_regex": None,  # support Regex: '_confidence$',
+            "condition_category": "Confidence",
+            "condition_type": "ConfidenceThreshold",
+            "condition_setting": confidence_threshold,
+        },
+        {
+            "description": f"STATE confidence score should be greater than or equal to {confidence_threshold}",
+            "field_name": "STATE",
+            "field_name_regex": None,  # support Regex: '_confidence$',
+            "condition_category": "Confidence",
+            "condition_type": "ConfidenceThreshold",
+            "condition_setting": confidence_threshold,
+        },
+        {
+            "description": f"ZIP_CODE_4 confidence score should be greater than or equal to {confidence_threshold}",
+            "field_name": "ZIP_CODE_4",
+            "field_name_regex": None,  # support Regex: '_confidence$',
+            "condition_category": "Confidence",
+            "condition_type": "ConfidenceThreshold",
+            "condition_setting": confidence_threshold,
+        },
+        {
+            "description": f"REGULATORY_APPROVAL_ID confidence score should be greater than or equal to {confidence_threshold}",
+            "field_name": "REGULATORY_APPROVAL_ID",
+            "field_name_regex": None,  # support Regex: '_confidence$',
+            "condition_category": "Confidence",
+            "condition_type": "ConfidenceThreshold",
+            "condition_setting": confidence_threshold,
+        },
+    ]
 
 
 class Condition:

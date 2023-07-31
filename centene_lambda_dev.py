@@ -1,13 +1,3 @@
-from utils.alignment import (
-    get_two_alignment,
-    get_three_alignment,
-    recover_from_aligned_candidates,
-)
-
-from utils.reg_id import get_reg_id
-from utils.rules import get_missed_and_checked_rules, get_rules_template, Condition
-from utils.image_processing import *
-
 import boto3
 from decimal import Decimal
 import json
@@ -16,64 +6,62 @@ import urllib.parse
 import urllib.error
 import math
 import re
-from rapidfuzz.process import extractOne
-from rapidfuzz.fuzz import ratio, WRatio
-from rapidfuzz.utils import default_process
 import os
+
+from utils.reg_id import get_reg_id
+from utils.rules import get_missed_and_checked_rules, get_rules_template, Condition
+from utils.image_processing import *
 from utils.misc import tmp_folder, get_last_dot_index
 
 
-print("Loading function")
 
-test_bucket_name = "centene-test"
-output_bucket_name = "centene-test-out"
+print('Loading function')
 
-session = boto3.Session(profile_name="default")
-textract = boto3.client("textract")
-s3 = boto3.resource("s3")
-client = s3.meta.client  # used for interacting with client for convenience
+session = boto3.Session(profile_name='ricoh', region_name="us-east-1")
 
-region = boto3.session.Session().region_name
+s3 = session.resource('s3')
+textract = session.client('textract')
+client = s3.meta.client #used for interacting with client for convenience
 
-# a2i=boto3.client('sagemaker-a2i-runtime', region_name=region)
+region = session.region_name
 
-# Must be different from trigger bucket
-# Lambda IAM role only has write permission to this bucket
-tables_bucket = test_bucket_name
-output_bucket = output_bucket_name
-data_bucket = test_bucket_name
+a2i=session.client('sagemaker-a2i-runtime', region_name=region)
+
+#Must be different from trigger bucket
+#Lambda IAM role only has write permission to this bucket
+output_bucket = 'textract-centene-dev-output'
 
 
+#os.environ["BUCKET"] = data_bucket
+#os.environ["REGION"] = region
+#role = sm.get_execution_role()
 
+#-----------------Queries ---------------
 
-# os.environ["BUCKET"] = data_bucket
-# os.environ["REGION"] = region
-# role = sm.get_execution_role()
-
-# ----------------Load regID table values-----------------------
-response = client.get_object(Bucket=tables_bucket, Key="twenty_codes.json")
-content = response["Body"].read().decode("utf-8")
-twenty_digit_codes = json.loads(content)
-twenty_digit_codes.sort(key=lambda x: x[-4:])  # order by year descending
-
-response = client.get_object(Bucket=tables_bucket, Key="approval_codes.json")
-content = response["Body"].read().decode("utf-8")
-reg_id_approved = json.loads(content)
-reg_id_approved
-# ----------------- Queries---------------
-
-
-
-queries = [
-    {"Text": "Who is the person?", "Alias": "ADDRESSEE"},
-    {"Text": "What is the street address of the person?", "Alias": "STREET_ADDRESS"},
-    {"Text": "What is the city of the person?", "Alias": "CITY"},
-    {"Text": "What is the state of the person?", "Alias": "STATE"},
-    {"Text": "What is the zip code of the person?", "Alias": "ZIP_CODE_4"},
+queries = [ 
+    {
+        'Text':'Who is the person?',
+        'Alias': 'ADDRESSEE'
+    },
+    {
+        'Text': 'What is the street address of the person?',
+        'Alias': 'STREET_ADDRESS'
+    },
+    {
+        'Text': 'What is the city of the person?',
+        'Alias': 'CITY'
+    },
+    {
+        'Text': 'What is the state of the person?',
+        'Alias': 'STATE'
+    },
+    {
+        'Text': 'What is the zip code of the person?',
+        'Alias': 'ZIP_CODE_4'
+    }
 ]
 
 # --------------- Helper Functions to call textract APIs ------------------
-
 
 def detect_text(bucket, key):
     response = textract.detect_document_text(
@@ -201,6 +189,7 @@ def parse_response_to_json(response_json, query_output):
 
     return query_output
 
+
 def save_dict_to_s3(dict_obj, bucket_name, file_name):
     """Saves dict_obj json key value pairs obtained from the queries,
     to the target S3 bucket bucket_name under file_name.
@@ -217,18 +206,15 @@ def save_dict_to_s3(dict_obj, bucket_name, file_name):
     return status
 
 
+
+
+
 # --------------- Main handler ------------------
 def lambda_handler(event, context):
     """Demonstrates S3 trigger that uses
     textract APIs to detect text, query text in S3 Object.
     """
-
-    for filename in os.listdir(tmp_folder):
-        # if filename.endswith('.tif'):  # Check if the file ends with ".tif"
-        file_path = os.path.join("tmp", filename)  # Get the full file path
-        os.remove(file_path)  # Remove the file
-        print(f"Removed file: {filename}")
-
+    
     print("Received event: " + json.dumps(event, indent=2))
 
     # Get the object from the event
@@ -323,7 +309,6 @@ def lambda_handler(event, context):
         print(f"Removed file: {filename}")
         
 
-    print(json.dumps(centene_format))
     return status, centene_format, rule_missed, rule_checked 
 
 
@@ -346,8 +331,8 @@ def get_response(bucket, key, local_file_name, lo_page, hi_page, centene_format,
 
     ##########################################################
     centene_format['RICOH_DCN'] = parts[-1][:-4] #strip .T
-    # centene_format['BATCH'] = parts[-2]
-    # centene_format['BATCH_PREFIX'] = parts[-3]
+    centene_format['BATCH'] = parts[-2]
+    centene_format['BATCH_PREFIX'] = parts[-3]
     ##########################################################
 
     # Save to S3 in correct place in output bucket
@@ -597,7 +582,7 @@ def get_event(tif_key):
                     "s3SchemaVersion": "1.0",
                     "configurationId": "828aa6fc-f7b5-4305-8584-487c791949c1",
                     "bucket": {
-                        "name": test_bucket_name,
+                        "name": "centenetransfer",
                         "ownerIdentity": {"principalId": "A3I5XTEXAMAI3E"},
                         "arn": "arn:aws:s3:::lambda-artifacts-deafc19498e3f2df",
                     },
@@ -618,14 +603,18 @@ def get_event(tif_key):
 ########################################################################################################################
 # tif_keys_list = [f"real-doc/C00194251{i}.tiff" for i in range(10) if i != 3]
 
+test_keys = ["Centenetesting/CUR6470-01_2765_05122023_0001133275/C001403764.TIF"]
+# tif_keys_list = sorted(
+#     [f"real-doc/{file_name}" for file_name in os.listdir("./problematic_samples/072423")]
+# )
 
-tif_keys_list = sorted(
-    [f"real-doc/{file_name}" for file_name in os.listdir("./problematic_samples/072423")]
-)
 
-
-events = [get_event(tif_key) for tif_key in tif_keys_list if tif_key[-1] in {"f", "F"}]
+events = [get_event(tif_key) for tif_key in test_keys]
 
 if __name__ == "__main__":
     for event in events[:1]:
-        lambda_handler(event, None)
+        status, centene_format, rule_missed, rule_checked  = lambda_handler(event, None)
+        print(centene_format)
+        print(rule_missed)
+        print(rule_checked)
+        print(status)
